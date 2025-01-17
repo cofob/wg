@@ -1,0 +1,5 @@
+/.direnv/
+/result*
+/*.local*
+/debug/
+/target/
