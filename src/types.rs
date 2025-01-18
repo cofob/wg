@@ -6,5 +6,5 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub addr: IpAddr,
     pub peer: SocketAddr,
-    pub listen: SocketAddr,
+    pub listen_port: u16,
 }

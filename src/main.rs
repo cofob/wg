@@ -1,32 +1,102 @@
 mod types;
 
-use std::fs::read_to_string;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
-use tun::BoxError;
-use types::Config;
+// use std::fs::read_to_string;
+use anyhow::Result;
+use mio::{Events, Interest, Poll, Token};
+use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr};
+use std::os::fd::{AsRawFd, RawFd};
+use tun::Device;
 
-#[tokio::main]
-async fn main() -> Result<(), BoxError> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
-    main_entry().await?;
-    Ok(())
+/// Struct to hold the TUN device and implement the `mio::event::Source` trait.
+struct MioTun {
+    dev: Device,
+    raw_fd: RawFd,
 }
 
-async fn main_entry() -> Result<(), BoxError> {
-    // Read config file.
-    let app_config: Config = serde_json::from_str(&read_to_string("config.json")?)?;
+impl MioTun {
+    fn new(dev: tun::Device) -> Self {
+        let raw_fd = dev.as_raw_fd();
+        MioTun {
+            // dev: Arc::new(Mutex::new(dev)),
+            dev,
+            raw_fd,
+        }
+    }
+}
 
-    // Setup TUN interface.
+impl mio::event::Source for MioTun {
+    fn register(
+        &mut self,
+        registry: &mio::Registry,
+        token: mio::Token,
+        interests: mio::Interest,
+    ) -> std::io::Result<()> {
+        let mut source_fd = mio::unix::SourceFd(&self.raw_fd);
+        source_fd.register(registry, token, interests)
+    }
+
+    fn reregister(
+        &mut self,
+        registry: &mio::Registry,
+        token: mio::Token,
+        interests: mio::Interest,
+    ) -> std::io::Result<()> {
+        let mut source_fd = mio::unix::SourceFd(&self.raw_fd);
+        source_fd.reregister(registry, token, interests)
+    }
+
+    fn deregister(&mut self, registry: &mio::Registry) -> std::io::Result<()> {
+        let mut source_fd = mio::unix::SourceFd(&self.raw_fd);
+        source_fd.deregister(registry)
+    }
+}
+
+impl std::ops::Deref for MioTun {
+    type Target = Device;
+
+    fn deref(&self) -> &Self::Target {
+        &self.dev
+    }
+}
+
+impl std::ops::DerefMut for MioTun {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.dev
+    }
+}
+
+// impl Read for MioTun {
+//     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+//         self.dev.lock().unwrap().read(buf)
+//     }
+
+//     fn read_vectored(&mut self, bufs: &mut [std::io::IoSliceMut<'_>]) -> std::io::Result<usize> {
+//         self.dev.lock().unwrap().read_vectored(bufs)
+//     }
+// }
+
+// impl Write for MioTun {
+//     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+//         self.dev.lock().unwrap().write(buf)
+//     }
+
+//     fn write_vectored(&mut self, bufs: &[std::io::IoSlice<'_>]) -> std::io::Result<usize> {
+//         self.dev.lock().unwrap().write_vectored(bufs)
+//     }
+
+//     fn flush(&mut self) -> std::io::Result<()> {
+//         self.dev.lock().unwrap().flush()
+//     }
+// }
+
+fn create_tun(addr: &IpAddr) -> Result<MioTun> {
     let mut tun_config = tun::Configuration::default();
 
     tun_config
-        .address(app_config.addr)
+        .address(addr)
         .netmask((255, 255, 255, 0))
-        .mtu(5000)
+        .mtu(1500)
         .up();
 
     #[cfg(target_os = "linux")]
@@ -34,58 +104,96 @@ async fn main_entry() -> Result<(), BoxError> {
         config.ensure_root_privileges(true);
     });
 
-    // Read data from UDP and send it to TUN.
-    // Read data from TUN and send it to UDP.
+    let dev = tun::create(&tun_config)?;
 
-    // 1. Create UDP socket.
-    let udp_socket = UdpSocket::bind(app_config.listen).await?;
+    Ok(MioTun::new(dev))
+}
 
-    // 2. Split the UDP socket into a reader and a writer.
-    // udp_tx sends data to UDP socket.
-    // udp_r receives data from UDP socket.
-    let udp_r = Arc::new(udp_socket);
-    let udp_s = udp_r.clone();
-    let (udp_tx, mut udp_rx) = mpsc::channel::<(Vec<u8>, SocketAddr)>(1_000);
+fn load_config() -> Result<types::Config> {
+    let config_str = std::fs::read_to_string("config.json")?;
+    let config: types::Config = serde_json::from_str(&config_str)?;
+    Ok(config)
+}
 
-    tokio::spawn(async move {
-        while let Some((bytes, addr)) = udp_rx.recv().await {
-            let len = udp_s.send_to(&bytes, &addr).await.unwrap();
-            // println!("{:?} bytes sent", len);
-        }
-    });
+const TUN: Token = Token(0);
+const UDP: Token = Token(1);
 
-    // 3. Create TUN device.
-    let dev = tun::create_as_async(&tun_config)?;
+fn main() -> Result<()> {
+    // Load the configuration.
+    let config = load_config()?;
 
-    // 4. Split the TUN device
-    // tun_tx sends data to TUN device.
-    // dev_rx receives data from TUN device.
-    let (mut dev_rx, mut dev_tx) = split(dev);
-    let (tun_tx, mut tun_rx) = mpsc::channel::<Vec<u8>>(1_000);
+    // Create a poll instance.
+    let mut poll = Poll::new()?;
+    // Create storage for events.
+    let mut events = Events::with_capacity(128);
 
-    tokio::spawn(async move {
-        while let Some(bytes) = tun_rx.recv().await {
-            dev_tx.write_all(&bytes).await.unwrap();
-        }
-    });
+    // Setup TUN interface.
+    let mut tun = create_tun(&config.addr)?;
 
-    // 5. Read data from UDP and send it to TUN.
-    tokio::spawn(async move {
-        let mut buf = [0u8; 4096];
+    // Register the TUN.
+    poll.registry()
+        .register(&mut tun, TUN, Interest::READABLE)?;
 
-        loop {
-            let (len, _addr) = udp_r.recv_from(&mut buf).await.unwrap();
-            let data = buf[..len].to_vec();
-            tun_tx.send(data).await.unwrap();
-        }
-    });
+    // Setup UDP socket.
+    let listen_addr = SocketAddr::from(([0, 0, 0, 0], config.listen_port));
+    let mut udp_sock = mio::net::UdpSocket::bind(listen_addr)?;
 
-    // 6. Read data from TUN and send it to UDP.
-    let mut buf = [0u8; 4096];
+    // Register the UDP socket.
+    poll.registry()
+        .register(&mut udp_sock, UDP, Interest::READABLE)?;
 
+    // Initialize a buffer for the UDP/TUN packets. We use the maximum size of a UDP
+    // packet, which is the maximum value of 16 a bit integer.
+    let mut buf = [0; 1 << 16];
+
+    // Start an event loop.
     loop {
-        let len = dev_rx.read(&mut buf).await?;
-        let data = buf[..len].to_vec();
-        udp_tx.send((data, app_config.peer)).await?;
+        // Poll Mio for events, blocking until we get an event.
+        poll.poll(&mut events, None)?;
+
+        // Process each event.
+        for event in events.iter() {
+            // We can use the token we previously provided to `register` to
+            // determine for which socket the event is.
+            match event.token() {
+                TUN => {
+                    println!("TUN event");
+                    // The socket contains data to read.
+                    let nbytes = tun.read(&mut buf)?;
+                    println!("Read {} bytes from TUN", nbytes);
+                    // Write the data back to the UDP socket.
+                    udp_sock.send_to(&buf[..nbytes], config.peer)?;
+                    println!("Sent {} bytes to UDP", nbytes);
+                }
+                UDP => {
+                    println!("UDP event");
+                    // The socket is ready to read.
+                    loop {
+                        // In this loop we receive all packets queued for the socket.
+                        match udp_sock.recv_from(&mut buf) {
+                            Ok((len, _src)) => {
+                                println!("Read {} bytes from UDP", len);
+                                // Send the packet to the TUN interface.
+                                tun.write_all(&buf[..len])?;
+                                println!("Sent {} bytes to TUN", len);
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                // If we get a `WouldBlock` error we know our socket
+                                // has no more packets queued, so we can return to
+                                // polling and wait for some more.
+                                break;
+                            }
+                            Err(e) => {
+                                // If it was any other kind of error, something went
+                                // wrong and we terminate with an error.
+                                return Err(e.into());
+                            }
+                        }
+                    }
+                }
+                // We don't expect any events with tokens other than those we provided.
+                _ => unreachable!(),
+            }
+        }
     }
 }
