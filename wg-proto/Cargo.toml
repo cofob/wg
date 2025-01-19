@@ -1,0 +1,10 @@
+[package]
+name = "wg-proto"
+version = "0.1.0"
+edition = "2021"
+description = "Abstract WireGuard protocol"
+
+[lib]
+
+[dependencies]
+thiserror = { version = "^2.0", default-features = false }

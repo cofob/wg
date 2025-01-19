@@ -1,0 +1,21 @@
+[package]
+name = "wg-rust-crypto"
+version = "0.1.0"
+edition = "2021"
+description = "Implementation of WireGuard crypto primitives in Rust"
+
+[lib]
+
+[dependencies]
+wg-proto = { path = "../wg-proto" }
+
+thiserror = { version = "^2.0", default-features = false }
+
+rand = "^0.8"
+x25519-dalek = { version = "^2.0", features = [
+    "static_secrets",
+    "reusable_secrets",
+] }
+chacha20poly1305 = "^0.10"
+blake2 = "^0.10"
+tai64 = "^4.1"
