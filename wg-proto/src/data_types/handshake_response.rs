@@ -78,6 +78,11 @@ impl<'a> HandshakeResponseMessage<'a> {
         Ok(Self { data })
     }
 
+    /// To byte slice.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.data
+    }
+
     /// Set the message type.
     pub fn set_message_type(&mut self, message_type: MessageType) -> &mut Self {
         self.data[0] = message_type.to_u8();
