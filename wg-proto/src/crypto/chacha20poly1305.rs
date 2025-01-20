@@ -1,12 +1,13 @@
-use std::error::Error;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum EncryptionBufferError {}
 
 /// A trait for ChaCha20Poly1305 AEAD in-place encryption buffer.
 pub trait EncryptionBuffer<'a>: AsRef<[u8]> + AsMut<[u8]> {
-    type Error: Error;
-
     fn new(data: &'a mut [u8], len: usize) -> Self;
 
-    fn extend_from_slice(&mut self, other: &[u8]) -> Result<(), Self::Error>;
+    fn extend_from_slice(&mut self, other: &[u8]) -> Result<(), EncryptionBufferError>;
 
     fn is_empty(&self) -> bool;
 
@@ -15,17 +16,23 @@ pub trait EncryptionBuffer<'a>: AsRef<[u8]> + AsMut<[u8]> {
     fn truncate(&mut self, len: usize);
 }
 
+#[derive(Debug, Error)]
+pub enum ChaCha20Poly1305Error {
+    #[error("Encryption failed")]
+    EncryptionFailed,
+    #[error("Decryption failed")]
+    DecryptionFailed,
+}
+
 /// A trait for ChaCha20Poly1305 AEAD encryption.
 pub trait ChaCha20Poly1305 {
-    type Error: Error;
-
     /// Encrypt plaintext using the given key, counter, and associated data.
     fn aead_encrypt(
         key: &[u8; 32],
         counter: u64,
         plaintext: &[u8],
         associated_data: &[u8],
-    ) -> Result<Vec<u8>, Self::Error>;
+    ) -> Result<Vec<u8>, ChaCha20Poly1305Error>;
 
     /// Decrypt ciphertext using the given key, counter, and associated data.
     fn aead_decrypt(
@@ -33,21 +40,21 @@ pub trait ChaCha20Poly1305 {
         counter: u64,
         ciphertext: &[u8],
         associated_data: &[u8],
-    ) -> Result<Vec<u8>, Self::Error>;
+    ) -> Result<Vec<u8>, ChaCha20Poly1305Error>;
 
     /// Encrypt buffer in place using the given key, counter, and associated data.
     fn aead_encrypt_in_place<'a>(
-        buffer: &'a mut impl EncryptionBuffer<'a>,
+        buffer: impl EncryptionBuffer<'a> + 'a,
         key: &[u8; 32],
         counter: u64,
         associated_data: &[u8],
-    ) -> Result<(), Self::Error>;
+    ) -> Result<(), ChaCha20Poly1305Error>;
 
     /// Decrypt buffer in place using the given key, counter, and associated data.
     fn aead_decrypt_in_place<'a>(
-        buffer: &'a mut impl EncryptionBuffer<'a>,
+        buffer: impl EncryptionBuffer<'a> + 'a,
         key: &[u8; 32],
         counter: u64,
         associated_data: &[u8],
-    ) -> Result<(), Self::Error>;
+    ) -> Result<(), ChaCha20Poly1305Error>;
 }

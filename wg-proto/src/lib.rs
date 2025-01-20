@@ -6,3 +6,4 @@ pub mod consts;
 pub mod crypto;
 pub mod data_types;
 pub mod errors;
+pub mod operations;

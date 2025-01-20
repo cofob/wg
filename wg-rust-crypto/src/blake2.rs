@@ -2,18 +2,10 @@ use blake2::{digest::Mac, Blake2s256, Blake2sMac, Digest};
 use thiserror::Error;
 use wg_proto::crypto;
 
-#[derive(Debug, Error)]
-pub enum Blake2Error {
-    #[error("Invalid key length")]
-    InvalidKeyLength,
-}
-
 pub struct Blake2s();
 
-impl crypto::blake2::Blake2sHmac for Blake2s {
-    type Error = Blake2Error;
-
-    fn hmac(key: &[u8], data: &[u8]) -> Result<[u8; 32], Self::Error> {
+impl crypto::blake2::Blake2s for Blake2s {
+    fn hmac(key: &[u8], data: &[u8]) -> [u8; 32] {
         // BLAKE2s has a 64-byte internal block size:
         const BLOCK_SIZE: usize = 64;
 
@@ -53,32 +45,24 @@ impl crypto::blake2::Blake2sHmac for Blake2s {
         // 6) Produce final 32-byte HMAC value
         let mut out = [0u8; 32];
         out.copy_from_slice(&result);
-        Ok(out)
+        out
     }
-}
 
-impl crypto::blake2::Blake2sMac for Blake2s {
-    type Error = Blake2Error;
-
-    fn mac(key: &[u8], data: &[u8]) -> Result<[u8; 16], Self::Error> {
+    fn mac(key: &[u8], data: &[u8]) -> [u8; 16] {
         let result = Blake2sMac::<blake2::digest::consts::U16>::new_from_slice(key)
-            .map_err(|_| Blake2Error::InvalidKeyLength)?
+            .expect("Invalid key length")
             .chain_update(data)
             .finalize()
             .into_bytes();
         let mut out = [0u8; 16];
         out.copy_from_slice(&result);
-        Ok(out)
+        out
     }
-}
 
-impl crypto::blake2::Blake2sHash for Blake2s {
-    type Error = Blake2Error;
-
-    fn hash(data: &[u8]) -> Result<[u8; 32], Self::Error> {
+    fn hash(data: &[u8]) -> [u8; 32] {
         let result = Blake2s256::new().chain_update(data).finalize();
         let mut out = [0u8; 32];
         out.copy_from_slice(&result);
-        Ok(out)
+        out
     }
 }

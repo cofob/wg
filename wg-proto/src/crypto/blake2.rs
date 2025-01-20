@@ -1,25 +1,11 @@
-use std::error::Error;
-
-/// A trait for blake2s HMAC.
-pub trait Blake2sHmac {
-    type Error: Error;
-
+/// A trait for blake2s hash.
+pub trait Blake2s {
     /// Compute the HMAC of `data` using `key`.
-    fn hmac(key: &[u8], data: &[u8]) -> Result<[u8; 32], Self::Error>;
-}
-
-/// A trait for blake2s keyed MAC.
-pub trait Blake2sMac {
-    type Error: Error;
+    fn hmac(key: &[u8], data: &[u8]) -> [u8; 32];
 
     /// Compute the MAC of `data` using `key`.
-    fn mac(key: &[u8], data: &[u8]) -> Result<[u8; 16], Self::Error>;
-}
-
-/// A trait for blake2s hash.
-pub trait Blake2sHash {
-    type Error: Error;
+    fn mac(key: &[u8], data: &[u8]) -> [u8; 16];
 
     /// Compute the hash of `data`.
-    fn hash(data: &[u8]) -> Result<[u8; 32], Self::Error>;
+    fn hash(data: &[u8]) -> [u8; 32];
 }

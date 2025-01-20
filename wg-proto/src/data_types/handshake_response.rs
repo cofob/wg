@@ -67,7 +67,9 @@ impl<'a> HandshakeResponseMessage<'a> {
     ///
     /// This function checks that the byte slice is exactly 92 bytes long
     /// and that the first byte is the correct message type.
-    pub fn from_bytes(data: &'a mut impl AsMut<[u8]>) -> Result<Self, MessageDecodeError> {
+    pub fn from_bytes(
+        data: &'a mut (impl AsMut<[u8]> + ?Sized),
+    ) -> Result<Self, MessageDecodeError> {
         let data = data.as_mut();
         if data.len() != 92 {
             return Err(MessageDecodeError::InvalidLength);
@@ -80,6 +82,11 @@ impl<'a> HandshakeResponseMessage<'a> {
 
     /// To byte slice.
     pub fn as_bytes(&self) -> &[u8] {
+        self.data
+    }
+
+    /// To mutable byte slice.
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         self.data
     }
 

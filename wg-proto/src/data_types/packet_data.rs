@@ -25,7 +25,7 @@ use super::{
 /// }
 /// ```
 pub struct PacketData<'a> {
-    data: &'a mut [u8],
+    pub data: &'a mut [u8],
 }
 
 impl<'a> PacketData<'a> {
@@ -57,7 +57,9 @@ impl<'a> PacketData<'a> {
     ///
     /// This function checks that the byte slice is at least 32 bytes long and that the message type
     /// is correct. It does not check the contents of the byte slice.
-    pub fn from_bytes(data: &'a mut impl AsMut<[u8]>) -> Result<Self, MessageDecodeError> {
+    pub fn from_bytes(
+        data: &'a mut (impl AsMut<[u8]> + ?Sized),
+    ) -> Result<Self, MessageDecodeError> {
         let data = data.as_mut();
         if data.len() < 32 {
             return Err(MessageDecodeError::InvalidLength);
@@ -70,6 +72,11 @@ impl<'a> PacketData<'a> {
 
     /// To byte slice.
     pub fn as_bytes(&self) -> &[u8] {
+        self.data
+    }
+
+    /// To mutable byte slice.
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         self.data
     }
 

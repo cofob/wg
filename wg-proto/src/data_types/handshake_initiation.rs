@@ -67,7 +67,9 @@ impl<'a> HandshakeInitiationMessage<'a> {
     ///
     /// This function checks that the byte slice is exactly 148 bytes long
     /// and that the first byte is the correct message type.
-    pub fn from_bytes(data: &'a mut impl AsMut<[u8]>) -> Result<Self, MessageDecodeError> {
+    pub fn from_bytes(
+        data: &'a mut (impl AsMut<[u8]> + ?Sized),
+    ) -> Result<Self, MessageDecodeError> {
         let data = data.as_mut();
         if data.len() != 148 {
             return Err(MessageDecodeError::InvalidLength);
@@ -80,6 +82,11 @@ impl<'a> HandshakeInitiationMessage<'a> {
 
     /// To byte slice.
     pub fn as_bytes(&self) -> &[u8] {
+        self.data
+    }
+
+    /// To mutable byte slice.
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         self.data
     }
 
@@ -121,6 +128,11 @@ impl<'a> HandshakeInitiationMessage<'a> {
         &self.data[40..88]
     }
 
+    /// Get the encrypted static public key as a mutable byte slice.
+    pub fn encrypted_static_mut(&mut self) -> &mut [u8] {
+        &mut self.data[40..88]
+    }
+
     /// Set the encrypted static public key.
     pub fn set_encrypted_static(&mut self, static_key: impl AsRef<[u8]>) -> &mut Self {
         self.data[40..88].copy_from_slice(static_key.as_ref());
@@ -130,6 +142,11 @@ impl<'a> HandshakeInitiationMessage<'a> {
     /// Get the encrypted timestamp.
     pub fn encrypted_timestamp(&self) -> &[u8] {
         &self.data[88..116]
+    }
+
+    /// Get the encrypted timestamp as a mutable byte slice.
+    pub fn encrypted_timestamp_mut(&mut self) -> &mut [u8] {
+        &mut self.data[88..116]
     }
 
     /// Set the encrypted timestamp.

@@ -1016,6 +1016,7 @@ dependencies = [
 name = "wg-proto"
 version = "0.1.0"
 dependencies = [
+ "rand",
  "thiserror",
 ]
 

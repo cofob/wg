@@ -65,3 +65,9 @@ impl FromLEArray<8> for [u8; 8] {
         *bytes
     }
 }
+
+/// A trait for a counter that can be incremented.
+pub trait Counter {
+    /// Increment the counter and return the new value.
+    fn next_counter(&mut self) -> u64;
+}
