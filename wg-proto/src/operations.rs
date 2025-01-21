@@ -266,3 +266,26 @@ where
     CHACHA::aead_encrypt_in_place(buffer, key, counter, &[])?;
     Ok(())
 }
+
+pub fn process_packet<'a>(buf: &'a mut [u8]) -> Result<PacketData<'a>, WgError> {
+    let packet = PacketData::from_bytes(buf)?;
+    Ok(packet)
+}
+
+pub fn decrypt_data_in_place<'a, CHACHA, CHACHABUFFER>(
+    data: &'a mut [u8],
+    key: &[u8; 32],
+    counter: u64,
+) -> Result<(), WgError>
+where
+    CHACHA: ChaCha20Poly1305,
+    CHACHABUFFER: EncryptionBuffer<'a> + 'a,
+{
+    // let buffer = CHACHABUFFER::new(data, len);
+    // CHACHA::aead_decrypt_in_place(buffer, key, counter, &[])?;
+    // For now, we will just decrypt the data without decrypting in place
+    let decrypted = CHACHA::aead_decrypt(key, counter, &data, &[])?;
+    let len = data.len();
+    data[..len - 16].copy_from_slice(&decrypted);
+    Ok(())
+}

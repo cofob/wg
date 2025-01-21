@@ -97,7 +97,7 @@ impl<'a> PacketData<'a> {
     }
 
     /// Get the counter.
-    fn counter<T: FromLEArray<8>>(&self) -> T {
+    pub fn counter<T: FromLEArray<8>>(&self) -> T {
         T::from_le_array(&self.data[8..16].try_into().unwrap())
     }
 
@@ -120,6 +120,11 @@ impl<'a> PacketData<'a> {
     /// Get mutable reference to the encrypted encapsulated packet.
     pub fn encrypted_encapsulated_packet_mut(&mut self) -> &mut [u8] {
         &mut self.data[16..]
+    }
+
+    /// Get slice of the unencrypted encapsulated packet.
+    pub fn encapsulated_packet(&self) -> &[u8] {
+        &self.data[16..&self.data.len() - 16]
     }
 
     /// Set the encrypted encapsulated packet.

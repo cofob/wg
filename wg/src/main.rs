@@ -2,9 +2,12 @@ mod log_setup;
 
 use anyhow::Result;
 use base64::prelude::*;
-use std::net::SocketAddr;
+use std::io::Write;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use tokio::net::UdpSocket;
+use tun::AsyncDevice;
+use wg_proto::operations::{decrypt_data_in_place, process_packet};
 use wg_proto::{
     crypto::{
         blake2::Blake2s,
@@ -20,6 +23,23 @@ use wg_proto::{
     },
 };
 use wg_rust_crypto::{blake2, chacha20poly1305, x25519};
+
+fn create_tun(addr: &IpAddr) -> Result<AsyncDevice> {
+    let mut tun_config = tun::Configuration::default();
+
+    tun_config
+        .address(addr)
+        .netmask((255, 255, 255, 0))
+        .mtu(1400)
+        .up();
+
+    #[cfg(target_os = "linux")]
+    tun_config.platform_config(|config| {
+        config.ensure_root_privileges(true);
+    });
+
+    Ok(tun::create_as_async(&tun_config)?)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -38,7 +58,8 @@ async fn main() -> Result<()> {
 }
 
 async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
-    let mut buf = [0u8; u16::MAX as usize];
+    let mut tun_buf = [0u8; u16::MAX as usize];
+    let mut udp_buf = [0u8; u16::MAX as usize];
     let mut rng = rand::thread_rng();
 
     // Load the static keys
@@ -65,7 +86,7 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
         wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
         wg_rust_crypto::tai64::Tai64N,
     >(
-        &mut buf,
+        &mut tun_buf,
         &mut rng,
         &initiator_static_secret,
         &initiator_static_public,
@@ -128,20 +149,52 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
 
     match state {
         PeerState::Ready(mut data) => {
-            let icmp_data = BASE64_STANDARD.decode("RQAAVCmiQABAAa33CgkAAwoJAAEIAEBuAB8AAZ0pjWcAAAAAyw0DAAAAAAAQERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzAxMjM0NTY3")?;
-            buf[16..16 + icmp_data.len()].copy_from_slice(&icmp_data);
-            let (mut packet, edata) = prepare_packet(&mut buf, 16, icmp_data.len(), &mut data)?;
-            encrypt_data_in_place::<
-                chacha20poly1305::ChaCha20Poly1305,
-                chacha20poly1305::EncryptionBuffer,
-            >(
-                &mut packet.encrypted_encapsulated_packet_mut(),
-                edata.padded_len,
-                &data.sending_key,
-                edata.counter,
-            )?;
-            udp_sock.send_to(&packet.as_bytes(), peer).await?;
-            println!("Sent: {:?}", &packet);
+            // Setup TUN interface.
+            let mut tun = create_tun(&IpAddr::from([10, 9, 0, 3]))?;
+            // Start an event loop.
+            loop {
+                // Read from either the TUN interface or the UDP socket.
+                tokio::select! {
+                    n = tun.recv(&mut buf[16..]) => {
+                        let n = n?;
+                        let (mut packet, edata) = prepare_packet(&mut buf, 16, n, &mut data)?;
+                        encrypt_data_in_place::<
+                            chacha20poly1305::ChaCha20Poly1305,
+                            chacha20poly1305::EncryptionBuffer,
+                        >(
+                            &mut packet.encrypted_encapsulated_packet_mut(),
+                            edata.padded_len,
+                            &data.sending_key,
+                            edata.counter,
+                        )?;
+                        udp_sock.send_to(&packet.as_bytes(), peer).await?;
+                        // println!("Sent: {:?}", &packet);
+                    }
+                    n = udp_sock.recv_from(&mut udp_buf) => {
+                        let (n, _) = n?;
+                        let mut packet = process_packet(&mut udp_buf[..n])?;
+                        if data.receiving_key_counter.put(packet.counter()).is_none() {
+                            println!("Received duplicated counter, dropping packet");
+                            continue;
+                        }
+                        let counter = packet.counter();
+                        decrypt_data_in_place::<
+                            chacha20poly1305::ChaCha20Poly1305,
+                            chacha20poly1305::EncryptionBuffer,
+                        >(
+                            packet.encrypted_encapsulated_packet_mut(),
+                            &data.receiving_key,
+                            counter,
+                        )?;
+                        // println!("Received: {:?}", &packet);
+                        tun.write(&packet.encapsulated_packet()).ok();
+                    }
+                    _ = quit.recv() => {
+                        println!("Received quit signal, exiting...");
+                        break;
+                    }
+                }
+            }
         }
         _ => {
             anyhow::bail!("Invalid state");
