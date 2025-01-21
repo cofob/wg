@@ -2,27 +2,19 @@ mod log_setup;
 
 use anyhow::Result;
 use base64::prelude::*;
-use std::io::Write;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tun::AsyncDevice;
 use wg_proto::operations::{decrypt_data_in_place, process_packet};
 use wg_proto::{
-    crypto::{
-        blake2::Blake2s,
-        chacha20poly1305::{ChaCha20Poly1305, EncryptionBuffer},
-        tai64::Tai64N,
-        x25519::{
-            X25519EphemeralSecret, X25519OperableSecretKey, X25519PublicKey, X25519StaticSecret,
-        },
-    },
-    data_types::{HandshakeInitiationMessage, HandshakeResponseMessage, PacketData, PeerState},
+    crypto::x25519::{X25519OperableSecretKey, X25519PublicKey, X25519StaticSecret},
+    data_types::{HandshakeResponseMessage, PeerState},
     operations::{
         encrypt_data_in_place, initiate_handshake, prepare_packet, process_handshake_response,
     },
 };
-use wg_rust_crypto::{blake2, chacha20poly1305, x25519};
 
 fn create_tun(addr: &IpAddr) -> Result<AsyncDevice> {
     let mut tun_config = tun::Configuration::default();
@@ -30,7 +22,7 @@ fn create_tun(addr: &IpAddr) -> Result<AsyncDevice> {
     tun_config
         .address(addr)
         .netmask((255, 255, 255, 0))
-        .mtu(1400)
+        .mtu(8900)
         .up();
 
     #[cfg(target_os = "linux")]
@@ -59,20 +51,19 @@ async fn main() -> Result<()> {
 
 async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
     let mut tun_buf = [0u8; u16::MAX as usize];
-    let mut udp_buf = [0u8; u16::MAX as usize];
     let mut rng = rand::thread_rng();
 
     // Load the static keys
     let mut initiator_static_private_buf: [u8; 32] = [0; 32];
     initiator_static_private_buf
-        .copy_from_slice(&BASE64_STANDARD.decode("kLSlfaoabpt64dRjpuhQZP44ZQBMGXelGPPi0xdImmI=")?);
+        .copy_from_slice(&BASE64_STANDARD.decode("cB+E1ciQHrt3WVnfaMG5/S7RMGqI5oTwNE7PbAKD/3s=")?);
     let initiator_static_secret =
         wg_rust_crypto::x25519::X25519StaticSecret::from_bytes(&initiator_static_private_buf)?;
     let initiator_static_public = initiator_static_secret.public_key()?;
 
     let mut responder_static_public_buf: [u8; 32] = [0; 32];
     responder_static_public_buf
-        .copy_from_slice(&BASE64_STANDARD.decode("/GWGlDyUlq3T6zyAGT0l4Yy93JbOnDwyizbTEcyQi00=")?);
+        .copy_from_slice(&BASE64_STANDARD.decode("IWt3XSUUynUcLVm2QMHv+VFoWnyvLIkzxv5A/7ocljQ=")?);
     let responder_static_public =
         wg_rust_crypto::x25519::X25519PublicKey::from_bytes(&responder_static_public_buf)?;
 
@@ -97,8 +88,8 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
 
     println!("Sending: {:?}", &msg);
 
-    let peer = SocketAddr::from(([159, 89, 2, 36], 62068));
-    let udp_sock = UdpSocket::bind(SocketAddr::from_str("0.0.0.0:0")?).await?;
+    let peer = SocketAddr::from(([172, 31, 32, 239], 51820));
+    let udp_sock = Arc::new(UdpSocket::bind(SocketAddr::from_str("0.0.0.0:0")?).await?);
     println!("UDP socket bound to: {:?}", udp_sock.local_addr()?);
 
     udp_sock.send_to(msg.as_bytes(), peer).await?;
@@ -117,7 +108,7 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
         }
         result = udp_sock.recv_from(&mut buf) => {
             match result {
-                Ok((n, s)) => {
+                Ok((n, _s)) => {
                     resp = HandshakeResponseMessage::try_from(&mut buf[..n])?;
                     println!("Received: {:?}", &resp);
                 }
@@ -148,53 +139,73 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
     }
 
     match state {
-        PeerState::Ready(mut data) => {
+        PeerState::Ready(data) => {
             // Setup TUN interface.
-            let mut tun = create_tun(&IpAddr::from([10, 9, 0, 3]))?;
-            // Start an event loop.
-            loop {
-                // Read from either the TUN interface or the UDP socket.
-                tokio::select! {
-                    n = tun.recv(&mut buf[16..]) => {
-                        let n = n?;
-                        let (mut packet, edata) = prepare_packet(&mut buf, 16, n, &mut data)?;
-                        encrypt_data_in_place::<
-                            chacha20poly1305::ChaCha20Poly1305,
-                            chacha20poly1305::EncryptionBuffer,
-                        >(
-                            &mut packet.encrypted_encapsulated_packet_mut(),
-                            edata.padded_len,
-                            &data.sending_key,
-                            edata.counter,
-                        )?;
-                        udp_sock.send_to(&packet.as_bytes(), peer).await?;
-                        // println!("Sent: {:?}", &packet);
-                    }
-                    n = udp_sock.recv_from(&mut udp_buf) => {
-                        let (n, _) = n?;
-                        let mut packet = process_packet(&mut udp_buf[..n])?;
-                        if data.receiving_key_counter.put(packet.counter()).is_none() {
-                            println!("Received duplicated counter, dropping packet");
-                            continue;
+            let tun = Arc::new(create_tun(&IpAddr::from([10, 9, 0, 3]))?);
+            let data = Arc::new(std::sync::Mutex::new(data));
+            let cpus = num_cpus::get();
+            for _ in 0..cpus {
+                let tun = tun.clone();
+                let data = data.clone();
+                let udp_sock = udp_sock.clone();
+                tokio::spawn(async move {
+                    let mut tun_buf = [0u8; u16::MAX as usize];
+                    let mut udp_buf = [0u8; u16::MAX as usize];
+                    // Start an event loop.
+                    loop {
+                        // Read from either the TUN interface or the UDP socket.
+                        tokio::select! {
+                            n = tun.recv(&mut tun_buf[16..]) => {
+                                let n = n.expect("TUN read error");
+                                let sending_key;
+                                let (mut packet, edata) = {
+                                    let mut data = data.lock().unwrap();
+                                    sending_key = data.sending_key;
+                                    prepare_packet(&mut tun_buf, 16, n, &mut data).expect("Prepare packet error")
+                                };
+                                encrypt_data_in_place::<
+                                    wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
+                                    wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
+                                >(
+                                    &mut packet.encrypted_encapsulated_packet_mut(),
+                                    edata.padded_len,
+                                    &sending_key,
+                                    edata.counter,
+                                ).expect("Encrypt error");
+                                udp_sock.send_to(&packet.as_bytes(), peer).await.expect("Send error");
+                                // println!("Sent: {:?}", &packet);
+                            }
+                            n = udp_sock.recv_from(&mut udp_buf) => {
+                                let (n, _) = n.expect("UDP read error");
+                                let receiving_key;
+                                let counter;
+                                let mut packet;
+                                {
+                                    let mut data = data.lock().unwrap();
+                                    receiving_key = data.receiving_key;
+                                    packet = process_packet(&mut udp_buf[..n]).expect("Process packet error");
+                                    counter = packet.counter();
+                                    if data.receiving_key_counter.put(counter).is_none() {
+                                        println!("Received duplicated counter, dropping packet");
+                                        continue;
+                                    }
+                                };
+                                decrypt_data_in_place::<
+                                    wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
+                                    wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
+                                >(
+                                    packet.encrypted_encapsulated_packet_mut(),
+                                    &receiving_key,
+                                    counter,
+                                ).expect("Decrypt error");
+                                // println!("Received: {:?}", &packet);
+                                tun.send(&packet.encapsulated_packet()).await.ok();
+                            }
                         }
-                        let counter = packet.counter();
-                        decrypt_data_in_place::<
-                            chacha20poly1305::ChaCha20Poly1305,
-                            chacha20poly1305::EncryptionBuffer,
-                        >(
-                            packet.encrypted_encapsulated_packet_mut(),
-                            &data.receiving_key,
-                            counter,
-                        )?;
-                        // println!("Received: {:?}", &packet);
-                        tun.write(&packet.encapsulated_packet()).ok();
                     }
-                    _ = quit.recv() => {
-                        println!("Received quit signal, exiting...");
-                        break;
-                    }
-                }
+                });
             }
+            quit.recv().await;
         }
         _ => {
             anyhow::bail!("Invalid state");

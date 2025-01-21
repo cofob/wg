@@ -1,5 +1,4 @@
 use blake2::{digest::Mac, Blake2s256, Blake2sMac, Digest};
-use thiserror::Error;
 use wg_proto::crypto;
 
 pub struct Blake2s();

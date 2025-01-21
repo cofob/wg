@@ -169,8 +169,8 @@ impl Counter for SenderCounter {
 
 #[derive(Debug)]
 pub struct Peer<T: Tai64N> {
-    greatest_seen_timestamp: T,
-    state: PeerState,
+    pub greatest_seen_timestamp: T,
+    pub state: PeerState,
 }
 
 #[cfg(test)]
