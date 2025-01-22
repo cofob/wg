@@ -281,11 +281,7 @@ where
     CHACHA: ChaCha20Poly1305,
     CHACHABUFFER: EncryptionBuffer<'a> + 'a,
 {
-    // let buffer = CHACHABUFFER::new(data, len);
-    // CHACHA::aead_decrypt_in_place(buffer, key, counter, &[])?;
-    // For now, we will just decrypt the data without decrypting in place
-    let decrypted = CHACHA::aead_decrypt(key, counter, &data, &[])?;
-    let len = data.len();
-    data[..len - 16].copy_from_slice(&decrypted);
+    let buffer = CHACHABUFFER::new(data, data.len());
+    CHACHA::aead_decrypt_in_place(buffer, key, counter, &[])?;
     Ok(())
 }

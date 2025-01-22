@@ -56,14 +56,14 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
     // Load the static keys
     let mut initiator_static_private_buf: [u8; 32] = [0; 32];
     initiator_static_private_buf
-        .copy_from_slice(&BASE64_STANDARD.decode("cB+E1ciQHrt3WVnfaMG5/S7RMGqI5oTwNE7PbAKD/3s=")?);
+        .copy_from_slice(&BASE64_STANDARD.decode("kLSlfaoabpt64dRjpuhQZP44ZQBMGXelGPPi0xdImmI=")?);
     let initiator_static_secret =
         wg_rust_crypto::x25519::X25519StaticSecret::from_bytes(&initiator_static_private_buf)?;
     let initiator_static_public = initiator_static_secret.public_key()?;
 
     let mut responder_static_public_buf: [u8; 32] = [0; 32];
     responder_static_public_buf
-        .copy_from_slice(&BASE64_STANDARD.decode("IWt3XSUUynUcLVm2QMHv+VFoWnyvLIkzxv5A/7ocljQ=")?);
+        .copy_from_slice(&BASE64_STANDARD.decode("/GWGlDyUlq3T6zyAGT0l4Yy93JbOnDwyizbTEcyQi00=")?);
     let responder_static_public =
         wg_rust_crypto::x25519::X25519PublicKey::from_bytes(&responder_static_public_buf)?;
 
@@ -88,7 +88,7 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
 
     println!("Sending: {:?}", &msg);
 
-    let peer = SocketAddr::from(([172, 31, 32, 239], 51820));
+    let peer = SocketAddr::from(([159, 89, 2, 36], 62068));
     let udp_sock = Arc::new(UdpSocket::bind(SocketAddr::from_str("0.0.0.0:0")?).await?);
     println!("UDP socket bound to: {:?}", udp_sock.local_addr()?);
 
