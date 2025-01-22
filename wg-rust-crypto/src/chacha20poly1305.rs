@@ -1,5 +1,4 @@
-use chacha20poly1305::aead::{self, Aead};
-use chacha20poly1305::aead::{AeadMutInPlace, KeyInit};
+use chacha20poly1305::aead::{self, AeadMutInPlace, KeyInit};
 use chacha20poly1305::{self, Key, Nonce};
 use thiserror::Error;
 use wg_proto::crypto;
@@ -20,7 +19,7 @@ impl<'a> crypto::chacha20poly1305::EncryptionBuffer<'a> for EncryptionBuffer<'a>
         EncryptionBuffer { data, len }
     }
 
-    fn extend_from_slice(
+    fn set_poly1305_tag(
         &mut self,
         other: &[u8],
     ) -> Result<(), crypto::chacha20poly1305::EncryptionBufferError> {
@@ -35,10 +34,6 @@ impl<'a> crypto::chacha20poly1305::EncryptionBuffer<'a> for EncryptionBuffer<'a>
 
     fn len(&self) -> usize {
         self.data.len()
-    }
-
-    fn truncate(&mut self, _len: usize) {
-        // do nothing
     }
 }
 
@@ -56,7 +51,7 @@ impl AsRef<[u8]> for EncryptionBuffer<'_> {
 
 impl<'a> aead::Buffer for EncryptionBuffer<'a> {
     fn extend_from_slice(&mut self, other: &[u8]) -> chacha20poly1305::aead::Result<()> {
-        <Self as crypto::chacha20poly1305::EncryptionBuffer>::extend_from_slice(self, other)
+        <Self as crypto::chacha20poly1305::EncryptionBuffer>::set_poly1305_tag(self, other)
             .map_err(|_| chacha20poly1305::aead::Error)
     }
 
@@ -68,8 +63,8 @@ impl<'a> aead::Buffer for EncryptionBuffer<'a> {
         <Self as crypto::chacha20poly1305::EncryptionBuffer>::len(self)
     }
 
-    fn truncate(&mut self, len: usize) {
-        <Self as crypto::chacha20poly1305::EncryptionBuffer>::truncate(self, len)
+    fn truncate(&mut self, _len: usize) {
+        // do nothing
     }
 }
 
@@ -92,7 +87,7 @@ impl<'a, T: crypto::chacha20poly1305::EncryptionBuffer<'a>> aead::Buffer
 {
     fn extend_from_slice(&mut self, other: &[u8]) -> chacha20poly1305::aead::Result<()> {
         self.buffer
-            .extend_from_slice(other)
+            .set_poly1305_tag(other)
             .map_err(|_| chacha20poly1305::aead::Error)
     }
 
@@ -104,8 +99,8 @@ impl<'a, T: crypto::chacha20poly1305::EncryptionBuffer<'a>> aead::Buffer
         self.buffer.len()
     }
 
-    fn truncate(&mut self, len: usize) {
-        self.buffer.truncate(len)
+    fn truncate(&mut self, _len: usize) {
+        // do nothing
     }
 }
 
@@ -136,31 +131,6 @@ pub enum ChaCha20Poly1305Error {
 pub struct ChaCha20Poly1305;
 
 impl crypto::chacha20poly1305::ChaCha20Poly1305 for ChaCha20Poly1305 {
-    fn aead_encrypt(
-        key: &[u8; 32],
-        counter: u64,
-        plaintext: &[u8],
-        associated_data: &[u8],
-    ) -> Result<Vec<u8>, crypto::chacha20poly1305::ChaCha20Poly1305Error> {
-        let cipher = chacha20poly1305::ChaCha20Poly1305::new(Key::from_slice(key));
-
-        // Create nonce with 32 bits of zeros followed by 64-bit little-endian counter
-        let mut nonce = [0u8; 12];
-        nonce[4..].copy_from_slice(&counter.to_le_bytes());
-        let nonce = Nonce::from_slice(&nonce);
-
-        // Encrypt the plaintext
-        cipher
-            .encrypt(
-                nonce,
-                chacha20poly1305::aead::Payload {
-                    msg: plaintext,
-                    aad: associated_data,
-                },
-            )
-            .map_err(|_| crypto::chacha20poly1305::ChaCha20Poly1305Error::EncryptionFailed)
-    }
-
     fn aead_encrypt_in_place<'a>(
         buffer: impl crypto::chacha20poly1305::EncryptionBuffer<'a> + 'a,
         key: &[u8; 32],
@@ -179,31 +149,6 @@ impl crypto::chacha20poly1305::ChaCha20Poly1305 for ChaCha20Poly1305 {
         cipher
             .encrypt_in_place(nonce, associated_data, &mut proxy)
             .map_err(move |_| crypto::chacha20poly1305::ChaCha20Poly1305Error::EncryptionFailed)
-    }
-
-    fn aead_decrypt(
-        key: &[u8; 32],
-        counter: u64,
-        ciphertext: &[u8],
-        associated_data: &[u8],
-    ) -> Result<Vec<u8>, crypto::chacha20poly1305::ChaCha20Poly1305Error> {
-        let cipher = chacha20poly1305::ChaCha20Poly1305::new(Key::from_slice(key));
-
-        // Create nonce with 32 bits of zeros followed by 64-bit little-endian counter
-        let mut nonce = [0u8; 12];
-        nonce[4..].copy_from_slice(&counter.to_le_bytes());
-        let nonce = Nonce::from_slice(&nonce);
-
-        // Decrypt the ciphertext
-        cipher
-            .decrypt(
-                nonce,
-                chacha20poly1305::aead::Payload {
-                    msg: ciphertext,
-                    aad: associated_data,
-                },
-            )
-            .map_err(move |_| crypto::chacha20poly1305::ChaCha20Poly1305Error::DecryptionFailed)
     }
 
     fn aead_decrypt_in_place<'a>(

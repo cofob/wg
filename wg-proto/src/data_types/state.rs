@@ -1,7 +1,7 @@
 //! Peer states.
 
 use crate::crypto::tai64::Tai64N;
-use std::cmp::max;
+use core::cmp::max;
 
 use super::traits::Counter;
 
@@ -137,8 +137,8 @@ impl CounterWindow {
     }
 }
 
-impl std::fmt::Debug for CounterWindow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for CounterWindow {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CounterWindow")
             .field("max_counter", &self.max_counter)
             .finish()

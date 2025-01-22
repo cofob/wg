@@ -6,13 +6,20 @@ use crate::data_types::{
     HandshakeResponseMessage, InitialHandshakeData, PacketData, PeerState, ReadyData,
 };
 use crate::errors::WgError;
+use crate::utils::concat_slices;
 use crate::{consts, data_types};
 use crate::{
     crypto::x25519::{X25519EphemeralSecret, X25519PublicKey, X25519StaticSecret},
     data_types::HandshakeInitiationMessage,
 };
 
-pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N: Tai64N>(
+pub fn initiate_handshake<
+    'a,
+    BLAKE2s: Blake2s,
+    CHACHA: ChaCha20Poly1305,
+    CHACHABUFFER: EncryptionBuffer<'a> + 'a,
+    TAI64N: Tai64N,
+>(
     buf: &'a mut [u8],
     rng: &mut impl rand::Rng,
     initiator_static_secret: &'a impl X25519StaticSecret,
@@ -30,15 +37,14 @@ pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N
     // initiator.chaining_key = HASH(CONSTRUCTION)
     let chaining_key = BLAKE2s::hash(consts::CONSTRUCTION.as_bytes());
     // initiator.hash = HASH(HASH(initiator.chaining_key || IDENTIFIER) || responder.static_public)
-    let hash = BLAKE2s::hash(
-        &vec![
-            chaining_key.to_vec(),
-            consts::IDENTIFIER.as_bytes().to_vec(),
-        ]
-        .concat(),
-    );
-    let hash =
-        BLAKE2s::hash(&vec![hash.to_vec(), responder_static_public.to_bytes().to_vec()].concat());
+    let hash = BLAKE2s::hash(&concat_slices::<{ 32 + consts::IDENTIFIER.len() }>([
+        &chaining_key,
+        consts::IDENTIFIER.as_bytes(),
+    ]));
+    let hash = BLAKE2s::hash(&concat_slices::<{ 32 + 32 }>([
+        &hash,
+        responder_static_public.to_bytes().as_slice(),
+    ]));
 
     // Generate a random 4-byte sender index
     // msg.sender_index = little_endian(initiator.sender_index)
@@ -51,63 +57,86 @@ pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N
 
     // Extend hash with the message
     // initiator.hash = HASH(initiator.hash || msg.unencrypted_ephemeral)
-    let hash = BLAKE2s::hash(
-        &vec![
-            hash.to_vec(),
-            initiator_ephemeral_public.to_bytes().to_vec(),
-        ]
-        .concat(),
-    );
+    let hash = BLAKE2s::hash(&concat_slices::<{ 32 + 32 }>([
+        &hash,
+        initiator_ephemeral_public.to_bytes().as_slice(),
+    ]));
 
     // temp = HMAC(initiator.chaining_key, msg.unencrypted_ephemeral)
     let temp = BLAKE2s::hmac(&chaining_key, initiator_ephemeral_public.to_bytes());
 
     // initiator.chaining_key = HMAC(temp, 0x1)
-    let message: [u8; 1] = [0x1];
-    let chaining_key = BLAKE2s::hmac(&temp, &message);
+    let chaining_key = BLAKE2s::hmac(&temp, &[0x1]);
 
     // temp = HMAC(initiator.chaining_key, DH(initiator.ephemeral_private, responder.static_public))
     let dh_result = initiator_ephemeral_secret.diffie_hellman(responder_static_public)?;
     let temp = BLAKE2s::hmac(&chaining_key, &dh_result);
 
     // initiator.chaining_key = HMAC(temp, 0x1)
-    let chaining_key = BLAKE2s::hmac(&temp, &message);
+    let chaining_key = BLAKE2s::hmac(&temp, &[0x1]);
 
     // key = HMAC(temp, initiator.chaining_key || 0x2)
-    let key = BLAKE2s::hmac(&temp, &vec![chaining_key.to_vec(), [0x2].to_vec()].concat());
+    let key = BLAKE2s::hmac(
+        &temp,
+        &concat_slices::<{ 32 + 1 }>([chaining_key.as_slice(), &[0x2]]),
+    );
 
     // msg.encrypted_static = AEAD(key, 0, initiator.static_public, initiator.hash)
-    let encrypted_static =
-        CHACHA::aead_encrypt(&key, 0, initiator_static_public.to_bytes(), &hash)?;
-    // initiator.hash = HASH(initiator.hash || msg.encrypted_static)
-    let hash = BLAKE2s::hash(&vec![hash.to_vec(), encrypted_static.to_vec()].concat());
+    // let encrypted_static =
+    //     CHACHA::aead_encrypt(&key, 0, initiator_static_public.to_bytes(), &hash)?;
+    msg.set_encrypted_static_unencrypted(initiator_static_public.to_bytes());
+    {
+        let buffer = CHACHABUFFER::new(
+            unsafe {
+                core::slice::from_raw_parts_mut(msg.encrypted_static_mut().as_mut_ptr(), 32 + 16)
+            },
+            32,
+        );
+        CHACHA::aead_encrypt_in_place(buffer, &key, 0, initiator_static_public.to_bytes())?;
+    }
 
-    msg.set_encrypted_static(&encrypted_static);
+    // initiator.hash = HASH(initiator.hash || msg.encrypted_static)
+    let hash = BLAKE2s::hash(&concat_slices::<{ 32 + 32 + 16 }>([
+        &hash,
+        msg.encrypted_static(),
+    ]));
 
     // temp = HMAC(initiator.chaining_key, DH(initiator.static_private, responder.static_public))
     let dh_result = initiator_static_secret.diffie_hellman(responder_static_public)?;
     let temp = BLAKE2s::hmac(&chaining_key, &dh_result);
     // initiator.chaining_key = HMAC(temp, 0x1)
-    let chaining_key = BLAKE2s::hmac(&temp, &message);
+    let chaining_key = BLAKE2s::hmac(&temp, &[0x1]);
     // key = HMAC(temp, initiator.chaining_key || 0x2)
-    let key = BLAKE2s::hmac(&temp, &vec![chaining_key.to_vec(), [0x2].to_vec()].concat());
+    let key = BLAKE2s::hmac(
+        &temp,
+        &concat_slices::<{ 32 + 1 }>([chaining_key.as_slice(), &[0x2]]),
+    );
 
     // msg.encrypted_timestamp = AEAD(key, 0, TAI64N(), initiator.hash)
-    let encrypted_timestamp = CHACHA::aead_encrypt(&key, 0, &TAI64N::now().to_bytes(), &hash)?;
-    // initiator.hash = HASH(initiator.hash || msg.encrypted_timestamp)
-    let hash = BLAKE2s::hash(&vec![hash.to_vec(), encrypted_timestamp.clone()].concat());
+    // let encrypted_timestamp = CHACHA::aead_encrypt(&key, 0, &TAI64N::now().to_bytes(), &hash)?;
+    msg.set_encrypted_timestamp_unencrypted(&TAI64N::now().to_bytes());
+    {
+        let buffer = CHACHABUFFER::new(
+            unsafe {
+                core::slice::from_raw_parts_mut(msg.encrypted_timestamp_mut().as_mut_ptr(), 12 + 16)
+            },
+            12,
+        );
+        CHACHA::aead_encrypt_in_place(buffer, &key, 0, &hash)?;
+    }
 
-    msg.set_encrypted_timestamp(&encrypted_timestamp);
+    // initiator.hash = HASH(initiator.hash || msg.encrypted_timestamp)
+    let hash = BLAKE2s::hash(&concat_slices::<{ 32 + 12 + 16 }>([
+        &hash,
+        msg.encrypted_timestamp(),
+    ]));
 
     // msg.mac1 = MAC(HASH(LABEL_MAC1 || responder.static_public), msg[0:offsetof(msg.mac1)])
     let mac1 = BLAKE2s::mac(
-        &BLAKE2s::hash(
-            &vec![
-                consts::LABEL_MAC1.as_bytes(),
-                responder_static_public.to_bytes(),
-            ]
-            .concat(),
-        ),
+        &BLAKE2s::hash(&concat_slices::<{ consts::LABEL_MAC1.len() + 32 }>([
+            consts::LABEL_MAC1.as_bytes(),
+            responder_static_public.to_bytes(),
+        ])),
         &msg.mac1_content(),
     );
     msg.set_mac1(&mac1);
@@ -133,6 +162,7 @@ pub fn process_handshake_response<
     'a,
     BLAKE2s: Blake2s,
     CHACHA: ChaCha20Poly1305,
+    CHACHABUFFER: EncryptionBuffer<'a> + 'a,
     X25519PUBKEY: X25519PublicKey,
 >(
     buf: &'a mut [u8],
@@ -140,11 +170,13 @@ pub fn process_handshake_response<
     initiator_static_secret: &'a impl X25519StaticSecret,
     initiator_ephemeral_secret: &'a impl X25519EphemeralSecret,
 ) -> Result<PeerState, WgError> {
-    let msg = HandshakeResponseMessage::from_bytes(&mut buf[..92])?;
+    let mut msg = HandshakeResponseMessage::from_bytes(&mut buf[..92])?;
 
     // responser.hash = HASH(responder.hash || msg.unencrypted_ephemeral)
-    let hash =
-        BLAKE2s::hash(&vec![state.hash.to_vec(), msg.unencrypted_ephemeral().to_vec()].concat());
+    let hash = BLAKE2s::hash(&concat_slices::<{ 32 + 32 }>([
+        &state.hash,
+        msg.unencrypted_ephemeral(),
+    ]));
 
     // temp = HMAC(responder.chaining_key, msg.unencrypted_ephemeral)
     let temp = BLAKE2s::hmac(&state.chaining_key, msg.unencrypted_ephemeral());
@@ -174,19 +206,30 @@ pub fn process_handshake_response<
     let chaining_key = BLAKE2s::hmac(&temp, &[0x1]);
 
     // temp2 = HMAC(temp, responder.chaining_key || 0x2)
-    let temp2 = BLAKE2s::hmac(&temp, &vec![chaining_key.to_vec(), [0x2].to_vec()].concat());
+    let temp2 = BLAKE2s::hmac(
+        &temp,
+        &concat_slices::<{ 32 + 1 }>([chaining_key.as_slice(), &[0x2]]),
+    );
 
     // key = HMAC(temp, temp2 || 0x3)
-    let key = BLAKE2s::hmac(&temp, &vec![temp2.to_vec(), [0x3].to_vec()].concat());
+    let key = BLAKE2s::hmac(
+        &temp,
+        &concat_slices::<{ 32 + 1 }>([temp2.as_slice(), &[0x3]]),
+    );
 
     // responder.hash = HASH(responder.hash || temp2)
-    let hash = BLAKE2s::hash(&vec![hash.to_vec(), temp2.to_vec()].concat());
+    let hash = BLAKE2s::hash(&concat_slices::<{ 32 + 32 }>([hash.as_slice(), &temp2]));
 
     // decrypt msg.encrypted_nothing
-    let nothing_plain = CHACHA::aead_decrypt(&key, 0, msg.encrypted_nothing(), &hash)?;
-
-    if !nothing_plain.is_empty() {
-        return Err(WgError::EncryptedEmptyNonEmpty);
+    // let nothing_plain = CHACHA::aead_decrypt(&key, 0, msg.encrypted_nothing(), &hash)?;
+    {
+        let buffer = CHACHABUFFER::new(
+            unsafe {
+                core::slice::from_raw_parts_mut(msg.encrypted_nothing_mut().as_mut_ptr(), 0 + 16)
+            },
+            0,
+        );
+        CHACHA::aead_decrypt_in_place(buffer, &key, 0, &hash)?;
     }
 
     // temp1 = HMAC(initiator.chaining_key, [empty])
@@ -194,7 +237,10 @@ pub fn process_handshake_response<
     // temp2 = HMAC(temp1, 0x1)
     let temp2 = BLAKE2s::hmac(&temp1, &[0x1]);
     // temp3 = HMAC(temp1, temp2 || 0x2)
-    let temp3 = BLAKE2s::hmac(&temp1, &vec![temp2.to_vec(), [0x2].to_vec()].concat());
+    let temp3 = BLAKE2s::hmac(
+        &temp1,
+        &concat_slices::<{ 32 + 1 }>([temp2.as_slice(), &[0x2]]),
+    );
     // initiator.sending_key = temp2
     let sending_key = temp2;
     // initiator.receiving_key = temp3
@@ -207,24 +253,20 @@ pub fn process_handshake_response<
     )))
 }
 
-pub struct EncryptData {
-    pub padded_len: usize,
-    pub slice: (usize, usize),
-    pub counter: u64,
-}
-
-pub fn prepare_packet<'a>(
+pub fn prepare_packet<'a, CHACHA: ChaCha20Poly1305, CHACHABUFFER: EncryptionBuffer<'a> + 'a>(
     buf: &'a mut [u8],
     start_offset: usize,
     len: usize,
     state: &mut ReadyData,
-) -> Result<(PacketData<'a>, EncryptData), WgError> {
+) -> Result<PacketData<'a>, WgError> {
     // Calculate padding so that len is a multiple of 16
     let padding = 16 - (len % 16);
     let padded_len = len + padding;
     if len % 16 != 0 {
         // Pad the data to a multiple of 16 bytes
-        buf[start_offset + len..start_offset + padded_len].copy_from_slice(&vec![0u8; padding]);
+        for i in 0..padding {
+            buf[start_offset + len + i] = 0;
+        }
     }
 
     // Determine header location and total length
@@ -242,29 +284,21 @@ pub fn prepare_packet<'a>(
     packet.set_receiver_index(state.receiver_index);
     packet.set_counter(counter);
 
-    Ok((
-        packet,
-        EncryptData {
+    // Encrypt the data
+    {
+        let buffer = CHACHABUFFER::new(
+            unsafe {
+                core::slice::from_raw_parts_mut(
+                    packet.encrypted_encapsulated_packet_mut().as_mut_ptr(),
+                    padded_len + 16,
+                )
+            },
             padded_len,
-            slice: (start_offset, padded_len + 16),
-            counter,
-        },
-    ))
-}
+        );
+        CHACHA::aead_encrypt_in_place(buffer, &state.sending_key, counter, &[])?;
+    }
 
-pub fn encrypt_data_in_place<'a, CHACHA, CHACHABUFFER>(
-    data: &'a mut [u8],
-    padded_len: usize,
-    key: &[u8; 32],
-    counter: u64,
-) -> Result<(), WgError>
-where
-    CHACHA: ChaCha20Poly1305,
-    CHACHABUFFER: EncryptionBuffer<'a> + 'a,
-{
-    let buffer = CHACHABUFFER::new(data, padded_len);
-    CHACHA::aead_encrypt_in_place(buffer, key, counter, &[])?;
-    Ok(())
+    Ok(packet)
 }
 
 pub fn process_packet<'a>(buf: &'a mut [u8]) -> Result<PacketData<'a>, WgError> {

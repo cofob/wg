@@ -144,6 +144,7 @@ impl GetMessageType for PacketData<'_> {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<&PacketData<'_>> for Vec<u8> {
     fn from(value: &PacketData) -> Vec<u8> {
         value.data.to_vec()
@@ -168,8 +169,8 @@ impl AsMut<[u8]> for PacketData<'_> {
     }
 }
 
-impl std::fmt::Debug for PacketData<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for PacketData<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PacketData")
             .field("message_type", &self.message_type())
             .field("receiver_index", &self.receiver_index::<u32>())

@@ -199,6 +199,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cidr"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd1b64030216239a2e7c364b13cd96a2097ebf0dfe5025f2dedee14a23f2ab60"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1033,7 +1042,10 @@ dependencies = [
 name = "wg-proto"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "cidr",
  "rand",
+ "serde",
  "thiserror",
 ]
 

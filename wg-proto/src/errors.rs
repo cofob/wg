@@ -24,8 +24,4 @@ pub enum WgError {
     X25519(#[from] crypto::x25519::X25519Error),
     #[error("Tai64N error: {0}")]
     Tai64N(#[from] crypto::tai64::Tai64NError),
-
-    // Operation errors
-    #[error("Encrypted empty non empty")]
-    EncryptedEmptyNonEmpty,
 }

@@ -144,6 +144,10 @@ impl<'a> HandshakeResponseMessage<'a> {
         &self.data[44..60]
     }
 
+    pub fn encrypted_nothing_mut(&mut self) -> &mut [u8] {
+        &mut self.data[44..60]
+    }
+
     /// Set the encrypted nothing.
     pub fn set_encrypted_nothing(&mut self, nothing: impl AsRef<[u8]>) -> &mut Self {
         self.data[44..60].copy_from_slice(nothing.as_ref());
@@ -189,6 +193,7 @@ impl GetMessageType for HandshakeResponseMessage<'_> {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<&HandshakeResponseMessage<'_>> for Vec<u8> {
     fn from(value: &HandshakeResponseMessage) -> Vec<u8> {
         value.data.to_vec()
@@ -213,8 +218,8 @@ impl AsMut<[u8]> for HandshakeResponseMessage<'_> {
     }
 }
 
-impl std::fmt::Debug for HandshakeResponseMessage<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for HandshakeResponseMessage<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HandshakeResponseMessage")
             .field("message_type", &self.message_type())
             .field("sender_index", &self.sender_index::<u32>())

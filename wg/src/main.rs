@@ -11,9 +11,7 @@ use wg_proto::operations::{decrypt_data_in_place, process_packet};
 use wg_proto::{
     crypto::x25519::{X25519OperableSecretKey, X25519PublicKey, X25519StaticSecret},
     data_types::{HandshakeResponseMessage, PeerState},
-    operations::{
-        encrypt_data_in_place, initiate_handshake, prepare_packet, process_handshake_response,
-    },
+    operations::{initiate_handshake, prepare_packet, process_handshake_response},
 };
 
 fn create_tun(addr: &IpAddr) -> Result<AsyncDevice> {
@@ -75,6 +73,7 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
     let (msg, mut state) = initiate_handshake::<
         wg_rust_crypto::blake2::Blake2s,
         wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
+        wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
         wg_rust_crypto::tai64::Tai64N,
     >(
         &mut tun_buf,
@@ -92,7 +91,7 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
     let udp_sock = Arc::new(UdpSocket::bind(SocketAddr::from_str("0.0.0.0:0")?).await?);
     println!("UDP socket bound to: {:?}", udp_sock.local_addr()?);
 
-    udp_sock.send_to(msg.as_bytes(), peer).await?;
+    udp_sock.send_to(msg.as_ref(), peer).await?;
 
     // Listen for response
     let mut buf = [0u8; 2048];
@@ -125,6 +124,7 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
             state = process_handshake_response::<
                 wg_rust_crypto::blake2::Blake2s,
                 wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
+                wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
                 wg_rust_crypto::x25519::X25519PublicKey,
             >(
                 &mut buf,
@@ -157,21 +157,13 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
                         tokio::select! {
                             n = tun.recv(&mut tun_buf[16..]) => {
                                 let n = n.expect("TUN read error");
-                                let sending_key;
-                                let (mut packet, edata) = {
+                                let packet = {
                                     let mut data = data.lock().unwrap();
-                                    sending_key = data.sending_key;
-                                    prepare_packet(&mut tun_buf, 16, n, &mut data).expect("Prepare packet error")
+                                    prepare_packet::<
+                                        wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
+                                        wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
+                                    >(&mut tun_buf, 16, n, &mut data).expect("Prepare packet error")
                                 };
-                                encrypt_data_in_place::<
-                                    wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-                                    wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
-                                >(
-                                    &mut packet.encrypted_encapsulated_packet_mut(),
-                                    edata.padded_len,
-                                    &sending_key,
-                                    edata.counter,
-                                ).expect("Encrypt error");
                                 udp_sock.send_to(&packet.as_bytes(), peer).await.expect("Send error");
                                 // println!("Sent: {:?}", &packet);
                             }

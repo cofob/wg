@@ -4,8 +4,19 @@ version = "0.1.0"
 edition = "2021"
 description = "Abstract WireGuard protocol"
 
-[lib]
+[features]
+default = ["std"]
+config = ["std", "dep:serde", "dep:cidr"]
+std = []
 
 [dependencies]
 thiserror = { version = "^2.0", default-features = false }
 rand = { version = "^0.8", default-features = false }
+serde = { version = "1", features = [
+    "derive",
+    "std",
+], optional = true, default-features = false }
+cidr = { version = "0.3.1", default-features = false, features = [
+    "serde",
+], optional = true }
+base64 = { version = "0.22.1", default-features = false }

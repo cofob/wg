@@ -139,6 +139,11 @@ impl<'a> HandshakeInitiationMessage<'a> {
         self
     }
 
+    pub fn set_encrypted_static_unencrypted(&mut self, static_key: impl AsRef<[u8]>) -> &mut Self {
+        self.data[40..72].copy_from_slice(static_key.as_ref());
+        self
+    }
+
     /// Get the encrypted timestamp.
     pub fn encrypted_timestamp(&self) -> &[u8] {
         &self.data[88..116]
@@ -152,6 +157,15 @@ impl<'a> HandshakeInitiationMessage<'a> {
     /// Set the encrypted timestamp.
     pub fn set_encrypted_timestamp(&mut self, timestamp: impl AsRef<[u8]>) -> &mut Self {
         self.data[88..116].copy_from_slice(timestamp.as_ref());
+        self
+    }
+
+    /// Set the timestamp for encryption.
+    pub fn set_encrypted_timestamp_unencrypted(
+        &mut self,
+        timestamp: impl AsRef<[u8]>,
+    ) -> &mut Self {
+        self.data[88..100].copy_from_slice(timestamp.as_ref());
         self
     }
 
@@ -194,6 +208,7 @@ impl GetMessageType for HandshakeInitiationMessage<'_> {
     }
 }
 
+#[cfg(feature = "std")]
 impl From<&HandshakeInitiationMessage<'_>> for Vec<u8> {
     fn from(value: &HandshakeInitiationMessage) -> Vec<u8> {
         value.data.to_vec()
@@ -218,8 +233,8 @@ impl AsMut<[u8]> for HandshakeInitiationMessage<'_> {
     }
 }
 
-impl std::fmt::Debug for HandshakeInitiationMessage<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for HandshakeInitiationMessage<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HandshakeInitiationMessage")
             .field("message_type", &self.message_type())
             .field("sender_index", &self.sender_index::<u32>())
