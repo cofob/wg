@@ -88,7 +88,7 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
 
     println!("Sending: {:?}", &msg);
 
-    let peer = SocketAddr::from(([159, 89, 2, 36], 62068));
+    let peer = SocketAddr::from(([159, 89, 2, 36], 51820));
     let udp_sock = Arc::new(UdpSocket::bind(SocketAddr::from_str("0.0.0.0:0")?).await?);
     println!("UDP socket bound to: {:?}", udp_sock.local_addr()?);
 
