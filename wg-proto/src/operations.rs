@@ -1,5 +1,5 @@
 use crate::crypto::blake2::Blake2s;
-use crate::crypto::chacha20poly1305::{ChaCha20Poly1305, EncryptionBuffer};
+use crate::crypto::chacha20poly1305::ChaCha20Poly1305;
 use crate::crypto::tai64::Tai64N;
 use crate::data_types::traits::Counter;
 use crate::data_types::{
@@ -13,13 +13,7 @@ use crate::{
     data_types::HandshakeInitiationMessage,
 };
 
-pub fn initiate_handshake<
-    'a,
-    BLAKE2s: Blake2s,
-    CHACHA: ChaCha20Poly1305,
-    CHACHABUFFER: EncryptionBuffer<'a> + 'a,
-    TAI64N: Tai64N,
->(
+pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N: Tai64N>(
     buf: &'a mut [u8],
     rng: &mut impl rand::Rng,
     initiator_static_secret: &'a impl X25519StaticSecret,
@@ -86,13 +80,14 @@ pub fn initiate_handshake<
     //     CHACHA::aead_encrypt(&key, 0, initiator_static_public.to_bytes(), &hash)?;
     msg.set_encrypted_static_unencrypted(initiator_static_public.to_bytes());
     {
-        let buffer = CHACHABUFFER::new(
-            unsafe {
+        CHACHA::aead_encrypt_in_place(
+            &mut unsafe {
                 core::slice::from_raw_parts_mut(msg.encrypted_static_mut().as_mut_ptr(), 32 + 16)
             },
-            32,
-        );
-        CHACHA::aead_encrypt_in_place(buffer, &key, 0, initiator_static_public.to_bytes())?;
+            &key,
+            0,
+            &hash,
+        )?;
     }
 
     // initiator.hash = HASH(initiator.hash || msg.encrypted_static)
@@ -116,13 +111,14 @@ pub fn initiate_handshake<
     // let encrypted_timestamp = CHACHA::aead_encrypt(&key, 0, &TAI64N::now().to_bytes(), &hash)?;
     msg.set_encrypted_timestamp_unencrypted(&TAI64N::now().to_bytes());
     {
-        let buffer = CHACHABUFFER::new(
-            unsafe {
+        CHACHA::aead_encrypt_in_place(
+            &mut unsafe {
                 core::slice::from_raw_parts_mut(msg.encrypted_timestamp_mut().as_mut_ptr(), 12 + 16)
             },
-            12,
-        );
-        CHACHA::aead_encrypt_in_place(buffer, &key, 0, &hash)?;
+            &key,
+            0,
+            &hash,
+        )?;
     }
 
     // initiator.hash = HASH(initiator.hash || msg.encrypted_timestamp)
@@ -162,7 +158,6 @@ pub fn process_handshake_response<
     'a,
     BLAKE2s: Blake2s,
     CHACHA: ChaCha20Poly1305,
-    CHACHABUFFER: EncryptionBuffer<'a> + 'a,
     X25519PUBKEY: X25519PublicKey,
 >(
     buf: &'a mut [u8],
@@ -223,13 +218,14 @@ pub fn process_handshake_response<
     // decrypt msg.encrypted_nothing
     // let nothing_plain = CHACHA::aead_decrypt(&key, 0, msg.encrypted_nothing(), &hash)?;
     {
-        let buffer = CHACHABUFFER::new(
-            unsafe {
+        CHACHA::aead_decrypt_in_place(
+            &mut unsafe {
                 core::slice::from_raw_parts_mut(msg.encrypted_nothing_mut().as_mut_ptr(), 0 + 16)
             },
+            &key,
             0,
-        );
-        CHACHA::aead_decrypt_in_place(buffer, &key, 0, &hash)?;
+            &hash,
+        )?;
     }
 
     // temp1 = HMAC(initiator.chaining_key, [empty])
@@ -253,7 +249,7 @@ pub fn process_handshake_response<
     )))
 }
 
-pub fn prepare_packet<'a, CHACHA: ChaCha20Poly1305, CHACHABUFFER: EncryptionBuffer<'a> + 'a>(
+pub fn prepare_packet<'a, CHACHA: ChaCha20Poly1305>(
     buf: &'a mut [u8],
     start_offset: usize,
     len: usize,
@@ -286,16 +282,17 @@ pub fn prepare_packet<'a, CHACHA: ChaCha20Poly1305, CHACHABUFFER: EncryptionBuff
 
     // Encrypt the data
     {
-        let buffer = CHACHABUFFER::new(
-            unsafe {
+        CHACHA::aead_encrypt_in_place(
+            &mut unsafe {
                 core::slice::from_raw_parts_mut(
                     packet.encrypted_encapsulated_packet_mut().as_mut_ptr(),
                     padded_len + 16,
                 )
             },
-            padded_len,
-        );
-        CHACHA::aead_encrypt_in_place(buffer, &state.sending_key, counter, &[])?;
+            &state.sending_key,
+            counter,
+            &[],
+        )?;
     }
 
     Ok(packet)
@@ -306,16 +303,11 @@ pub fn process_packet<'a>(buf: &'a mut [u8]) -> Result<PacketData<'a>, WgError> 
     Ok(packet)
 }
 
-pub fn decrypt_data_in_place<'a, CHACHA, CHACHABUFFER>(
+pub fn decrypt_data_in_place<'a, CHACHA: ChaCha20Poly1305>(
     data: &'a mut [u8],
     key: &[u8; 32],
     counter: u64,
-) -> Result<(), WgError>
-where
-    CHACHA: ChaCha20Poly1305,
-    CHACHABUFFER: EncryptionBuffer<'a> + 'a,
-{
-    let buffer = CHACHABUFFER::new(data, data.len());
-    CHACHA::aead_decrypt_in_place(buffer, key, counter, &[])?;
+) -> Result<(), WgError> {
+    CHACHA::aead_decrypt_in_place(data, key, counter, &[])?;
     Ok(())
 }

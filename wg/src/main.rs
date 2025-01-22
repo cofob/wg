@@ -73,7 +73,6 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
     let (msg, mut state) = initiate_handshake::<
         wg_rust_crypto::blake2::Blake2s,
         wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-        wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
         wg_rust_crypto::tai64::Tai64N,
     >(
         &mut tun_buf,
@@ -124,7 +123,6 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
             state = process_handshake_response::<
                 wg_rust_crypto::blake2::Blake2s,
                 wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-                wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
                 wg_rust_crypto::x25519::X25519PublicKey,
             >(
                 &mut buf,
@@ -161,7 +159,6 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
                                     let mut data = data.lock().unwrap();
                                     prepare_packet::<
                                         wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-                                        wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
                                     >(&mut tun_buf, 16, n, &mut data).expect("Prepare packet error")
                                 };
                                 udp_sock.send_to(&packet.as_bytes(), peer).await.expect("Send error");
@@ -184,7 +181,6 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
                                 };
                                 decrypt_data_in_place::<
                                     wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-                                    wg_rust_crypto::chacha20poly1305::EncryptionBuffer,
                                 >(
                                     packet.encrypted_encapsulated_packet_mut(),
                                     &receiving_key,
