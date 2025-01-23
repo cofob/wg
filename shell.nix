@@ -1,4 +1,4 @@
-{ channel ? "stable", profile ? "default", pkgs ? import <nixpkgs> }:
+{ channel ? "nightly", profile ? "default", pkgs ? import <nixpkgs> }:
 let
   pkgs' = pkgs.extend (import (builtins.fetchTarball {
     url =

@@ -19,6 +19,7 @@ pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N
     initiator_ephemeral_secret: &'a impl X25519EphemeralSecret,
     initiator_ephemeral_public: &'a impl X25519PublicKey,
     responder_static_public: &'a impl X25519PublicKey,
+    last_received_cookie: Option<&'a [u8; 16]>,
 ) -> Result<(HandshakeInitiationMessage<'a>, PeerState), WgError> {
     let mut msg = HandshakeInitiationMessage::from_bytes_unchecked(&mut buf[..148]);
 
@@ -122,7 +123,12 @@ pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N
     //     msg.mac2 = [zeros]
     // else
     //     msg.mac2 = MAC(initiator.last_received_cookie, msg[0:offsetof(msg.mac2)])
-    // buf.extend_from_slice(&[0u8; 16]);
+    if let Some(cookie) = last_received_cookie {
+        let mac2 = BLAKE2s::mac(cookie, &msg.mac2_content());
+        msg.set_mac2(&mac2);
+    } else {
+        msg.set_mac2(&[0u8; 16]);
+    }
 
     Ok((
         msg,

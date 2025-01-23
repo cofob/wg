@@ -5,13 +5,8 @@ edition = "2021"
 description = "WireGuard implementation in Rust"
 
 [dependencies]
-wg-rust-crypto = { path = "../wg-rust-crypto" }
-wg-proto = { path = "../wg-proto" }
-
-# Networking
-tokio = { version = "1.43.0", features = ["full"] }
-tun = { version = "0.7.10", features = ["async"] }
-# packet = "0.1.4"
+io-uring = "0.6"
+tun = "0.7.10"
 
 # Logging
 log = "0.4.25"
@@ -20,15 +15,7 @@ pretty_env_logger = "0.5.0"
 # Error handling
 anyhow = "1.0.95"
 
-# Serialization
-# serde = { version = "1.0.217", features = ["derive"] }
-# serde_json = "1.0.135"
-
-# Ctrl-C handling
-ctrlc2 = { version = "3.5.9", features = ["tokio", "termination"] }
-
-# Base64 encoding
-base64 = "0.22.1"
-# Random number generation
-rand = "^0.8"
 num_cpus = "1.16.0"
+threadpool = "1.8.1"
+slab = "0.4.9"
+libc = "0.2.169"

@@ -1,20 +1,24 @@
+#![feature(mpmc_channel)]
+
 mod log_setup;
 
 use anyhow::Result;
-use base64::prelude::*;
-use std::net::{IpAddr, SocketAddr};
+use io_uring::{opcode, types, IoUring};
+use log::debug;
+use slab::Slab;
+use std::net::IpAddr;
+use std::os::fd::AsRawFd;
 use std::str::FromStr;
-use std::sync::Arc;
-use tokio::net::UdpSocket;
-use tun::AsyncDevice;
-use wg_proto::operations::{decrypt_data_in_place, process_packet};
-use wg_proto::{
-    crypto::x25519::{X25519OperableSecretKey, X25519PublicKey, X25519StaticSecret},
-    data_types::{traits::Counter, HandshakeResponseMessage, PeerState},
-    operations::{initiate_handshake, prepare_packet, process_handshake_response},
-};
+use std::sync::mpmc;
+use std::time::Duration;
+use tun::Device;
 
-fn create_tun(addr: &IpAddr) -> Result<AsyncDevice> {
+#[derive(Clone, Debug)]
+enum Token {
+    TunRead { buf_ptr: *mut u8, buf_len: usize },
+}
+
+fn create_tun(addr: &IpAddr) -> Result<Device> {
     let mut tun_config = tun::Configuration::default();
 
     tun_config
@@ -28,220 +32,236 @@ fn create_tun(addr: &IpAddr) -> Result<AsyncDevice> {
         config.ensure_root_privileges(true);
     });
 
-    Ok(tun::create_as_async(&tun_config)?)
+    Ok(tun::create(&tun_config)?)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    log_setup::configure_logging(&None)?;
+enum WorkerMessage {
+    Shutdown,
+    Read { buf_ptr: usize, buf_len: usize },
+}
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<()>(1);
+enum MasterMessage {
+    ReturnBuffer { buf_ptr: usize, buf_len: usize },
+}
 
-    ctrlc2::set_async_handler(async move {
-        tx.send(()).await.expect("Signal error");
-    })
-    .await;
-
-    main_entry(rx).await?;
+fn worker_inner(tx: &mpmc::Sender<MasterMessage>, message: WorkerMessage) -> Result<()> {
+    match message {
+        WorkerMessage::Read { buf_ptr, buf_len } => {
+            let buf = unsafe { std::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+            debug!("worker read: {:?}", buf);
+            tx.send(MasterMessage::ReturnBuffer { buf_ptr, buf_len })?;
+        }
+        WorkerMessage::Shutdown => {
+            return Err(anyhow::anyhow!("worker shutdown"));
+        }
+    }
 
     Ok(())
 }
 
-async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
-    let mut tun_buf = [0u8; u16::MAX as usize];
-    let mut rng = rand::thread_rng();
-
-    // Load the static keys
-    let mut initiator_static_private_buf: [u8; 32] = [0; 32];
-    initiator_static_private_buf
-        .copy_from_slice(&BASE64_STANDARD.decode("kLSlfaoabpt64dRjpuhQZP44ZQBMGXelGPPi0xdImmI=")?);
-    let initiator_static_secret =
-        wg_rust_crypto::x25519::X25519StaticSecret::from_bytes(&initiator_static_private_buf)?;
-    let initiator_static_public = initiator_static_secret.public_key()?;
-
-    let mut responder_static_public_buf: [u8; 32] = [0; 32];
-    responder_static_public_buf
-        .copy_from_slice(&BASE64_STANDARD.decode("/GWGlDyUlq3T6zyAGT0l4Yy93JbOnDwyizbTEcyQi00=")?);
-    let responder_static_public =
-        wg_rust_crypto::x25519::X25519PublicKey::from_bytes(&responder_static_public_buf)?;
-
-    // Generate an ephemeral keypair
-    let initiator_ephemeral_secret = wg_rust_crypto::x25519::X25519EphemeralSecret::generate();
-    let initiator_ephemeral_public = initiator_ephemeral_secret.public_key()?;
-
-    // Create a handshake initiation message
-    let (msg, mut state) = initiate_handshake::<
-        wg_rust_crypto::blake2::Blake2s,
-        wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-        wg_rust_crypto::tai64::Tai64N,
-    >(
-        &mut tun_buf,
-        &mut rng,
-        &initiator_static_secret,
-        &initiator_static_public,
-        &initiator_ephemeral_secret,
-        &initiator_ephemeral_public,
-        &responder_static_public,
-    )?;
-
-    println!("Sending: {:?}", &msg);
-
-    let peer = SocketAddr::from(([159, 89, 2, 36], 51820));
-    let udp_sock = Arc::new(UdpSocket::bind(SocketAddr::from_str("0.0.0.0:0")?).await?);
-    println!("UDP socket bound to: {:?}", udp_sock.local_addr()?);
-
-    udp_sock.send_to(msg.as_ref(), peer).await?;
-
-    // Listen for response
-    let mut buf = [0u8; 2048];
-    let resp: HandshakeResponseMessage;
-
-    tokio::select! {
-        _ = quit.recv() => {
-            println!("Received quit signal, exiting...");
-            return Ok(());
-        }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
-            anyhow::bail!("Timeout");
-        }
-        result = udp_sock.recv_from(&mut buf) => {
-            match result {
-                Ok((n, _s)) => {
-                    resp = HandshakeResponseMessage::try_from(&mut buf[..n])?;
-                    println!("Received: {:?}", &resp);
+fn worker(rx: mpmc::Receiver<WorkerMessage>, tx: mpmc::Sender<MasterMessage>) {
+    loop {
+        match rx.recv() {
+            Ok(message) => {
+                if let WorkerMessage::Shutdown = message {
+                    break;
                 }
-                Err(e) => {
-                    return Err(e.into());
+                if let Err(e) = worker_inner(&tx, message) {
+                    eprintln!("worker error: {:?}", e);
                 }
+            }
+            Err(_) => {
+                break;
             }
         }
     }
+}
 
-    // // Stage 2. Data keys derivation.
-    match state {
-        PeerState::InitialHandshake(data) => {
-            state = process_handshake_response::<
-                wg_rust_crypto::blake2::Blake2s,
-                wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-                wg_rust_crypto::x25519::X25519PublicKey,
-            >(
-                &mut buf,
-                data,
-                &initiator_static_secret,
-                &initiator_ephemeral_secret,
-            )?;
-        }
-        _ => {
-            anyhow::bail!("Invalid state");
+/// Struct to hold the buffer data and get buffer chunks from it.
+struct Buffer {
+    data: Vec<u8>,
+    chunk_size: usize,
+    available_ptrs: Vec<usize>,
+}
+
+impl Buffer {
+    fn new(data: Vec<u8>, chunk_size: usize) -> Self {
+        let available_ptrs = Self::get_available_ptrs(&data, chunk_size);
+        Self {
+            data,
+            chunk_size,
+            available_ptrs,
         }
     }
 
-    match state {
-        PeerState::Ready(data) => {
-            // Setup TUN interface.
-            let tun = Arc::new(create_tun(&IpAddr::from([10, 9, 0, 3]))?);
-            let data = Arc::new(std::sync::Mutex::new(data));
-            let cpus = num_cpus::get();
-            for _ in 0..cpus {
-                let tun = tun.clone();
-                let data = data.clone();
-                let udp_sock = udp_sock.clone();
-                tokio::spawn(async move {
-                    let mut tun_buf = [0u8; u16::MAX as usize];
-                    let mut udp_buf = [0u8; u16::MAX as usize];
-                    // Start an event loop.
-                    loop {
-                        // Read from either the TUN interface or the UDP socket.
-                        tokio::select! {
-                            n = tun.recv(&mut tun_buf[16..]) => {
-                                let n = n.expect("TUN read error");
-                                let counter;
-                                let receiver_index;
-                                let key;
-                                {
-                                    let mut data = data.lock().unwrap();
-                                    counter = data.sending_key_counter.next_counter();
-                                    receiver_index = data.receiver_index;
-                                    key = data.sending_key;
-                                };
-                                let packet = prepare_packet::<_,
-                                        wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-                                    >(&mut tun_buf, 16, n, counter, receiver_index, &key).expect("Prepare packet error");
-                                udp_sock.send_to(&packet.as_bytes(), peer).await.expect("Send error");
-                                // println!("Sent: {:?}", &packet);
-                            }
-                            n = udp_sock.recv_from(&mut udp_buf) => {
-                                let (n, _) = n.expect("UDP read error");
-                                let receiving_key;
-                                let counter;
-                                let mut packet;
-                                {
-                                    let mut data = data.lock().unwrap();
-                                    receiving_key = data.receiving_key;
-                                    packet = process_packet(&mut udp_buf[..n]).expect("Process packet error");
-                                    counter = packet.counter();
-                                    if data.receiving_key_counter.put(counter).is_none() {
-                                        println!("Received duplicated counter, dropping packet");
-                                        continue;
-                                    }
-                                };
-                                decrypt_data_in_place::<
-                                    wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-                                >(
-                                    packet.encrypted_encapsulated_packet_mut(),
-                                    &receiving_key,
-                                    counter,
-                                ).expect("Decrypt error");
-                                // println!("Received: {:?}", &packet);
-                                tun.send(&packet.encapsulated_packet()).await.ok();
-                            }
-                        }
+    fn get_available_ptrs(data: &Vec<u8>, chunk_size: usize) -> Vec<usize> {
+        let start_ptr = data.as_ptr() as usize;
+        (0..data.len())
+            .step_by(chunk_size)
+            .map(|i| start_ptr + i)
+            .collect()
+    }
+
+    fn get_chunk(&mut self) -> Option<&mut [u8]> {
+        if let Some(ptr) = self.available_ptrs.pop() {
+            Some(unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, self.chunk_size) })
+        } else {
+            None
+        }
+    }
+
+    /// Read chunk should have additional 16 bytes in outer sides of the buffer
+    /// to store the metadata and poly1305 tag.
+    ///
+    /// [ metadata | chunk | metadata ]
+    fn get_read_chunk(&mut self) -> Option<&mut [u8]> {
+        if let Some(ptr) = self.available_ptrs.pop() {
+            Some(unsafe {
+                std::slice::from_raw_parts_mut((ptr as *mut u8).offset(16), self.chunk_size - 32)
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Convert read chunk to write chunk by adding 16 bytes in outer sides of the buffer.
+    fn convert_read_chunk_to_write_chunk(&self, chunk: &mut [u8]) -> &mut [u8] {
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                (chunk.as_ptr() as usize as *mut u8).offset(-16),
+                self.chunk_size + 32,
+            )
+        }
+    }
+
+    fn return_chunk(&mut self, chunk: &mut [u8]) {
+        self.available_ptrs.push(chunk.as_ptr() as usize);
+    }
+
+    fn get_available_chunks(&self) -> usize {
+        self.available_ptrs.len()
+    }
+}
+
+fn main() -> Result<()> {
+    log_setup::configure_logging(&None)?;
+
+    let device = create_tun(&IpAddr::from_str("10.0.0.3")?)?;
+    let raw_fd = device.as_raw_fd();
+
+    let cpus = num_cpus::get();
+
+    // let pool = ThreadPool::new(cpus);
+
+    // let (stx, srx) = std::sync::mpsc::channel();
+
+    let mut ring = IoUring::new(64)?;
+
+    let (submitter, mut sq, mut cq) = ring.split();
+
+    let mut token_alloc = Slab::with_capacity(64);
+
+    let (wtx, wrx) = mpmc::channel();
+    let (mtx, mrx) = mpmc::channel();
+
+    for _ in 0..cpus {
+        let wrx = wrx.clone();
+        let mtx = mtx.clone();
+        std::thread::spawn(move || worker(wrx, mtx));
+    }
+
+    // Create one vector enough to hold all the buffers for TUN reads/writes
+    let mtu = 8932;
+    let mut tun_buffer = Buffer::new(vec![0; mtu * cpus * 2], mtu);
+
+    // Create read from TUN requests for all the cpus
+    for _ in 0..cpus {
+        let buf = tun_buffer.get_read_chunk().unwrap();
+        let read_token = token_alloc.insert(Token::TunRead {
+            buf_ptr: buf.as_mut_ptr(),
+            buf_len: buf.len(),
+        });
+        let read_e = opcode::Read::new(types::Fd(raw_fd), buf.as_mut_ptr(), buf.len() as _)
+            .build()
+            .user_data(read_token as _);
+        unsafe {
+            sq.push(&read_e)?;
+        }
+    }
+
+    // Read from the tun device
+    loop {
+        sq.sync();
+        submitter.submit()?;
+        cq.sync();
+
+        // Wait for channel messages if there are no IO events
+        let mut messages = vec![];
+        if cq.len() == 0 {
+            match mrx.recv_timeout(Duration::from_millis(10)) {
+                Ok(message) => {
+                    messages.push(message);
+                },
+                Err(_) => {
+                    // If there are no messages, continue the loop
+                    continue;
+                }
+            }
+        }
+
+        // Process the messages for the master thread
+        for message in messages.into_iter().chain(mrx.try_iter()) {
+            match message {
+                MasterMessage::ReturnBuffer { buf_ptr, buf_len } => {
+                    // Create read request
+                    let buf =
+                        unsafe { std::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+                    let read_token = token_alloc.insert(Token::TunRead {
+                        buf_ptr: buf_ptr as *mut u8,
+                        buf_len,
+                    });
+                    let read_e =
+                        opcode::Read::new(types::Fd(raw_fd), buf.as_mut_ptr(), buf.len() as _)
+                            .build()
+                            .user_data(read_token as _);
+                    unsafe {
+                        sq.push(&read_e)?;
                     }
-                });
+                }
             }
-            quit.recv().await;
         }
-        _ => {
-            anyhow::bail!("Invalid state");
+
+        // Process IO events
+        for cqe in &mut cq {
+            let ret = cqe.result();
+            let token_index = cqe.user_data() as usize;
+            if ret < 0 {
+                eprintln!(
+                    "token {:?} error: {:?}",
+                    token_alloc.get(token_index),
+                    std::io::Error::from_raw_os_error(-ret)
+                );
+                continue;
+            }
+
+            let token = &mut token_alloc[token_index];
+            match token.clone() {
+                Token::TunRead { buf_ptr, buf_len } => {
+                    let len = ret as usize;
+                    let buf = unsafe { std::slice::from_raw_parts_mut(buf_ptr, buf_len) };
+
+                    // Send the buffer to processing threads channel
+                    wtx.send(WorkerMessage::Read {
+                        buf_ptr: buf_ptr as usize,
+                        buf_len: len,
+                    })?;
+
+                    // Remove the read token from the slab
+                    token_alloc.remove(token_index);
+                }
+            }
         }
     }
-
-    // println!("Sending: {:?}", packet.as_bytes());
-
-    // udp_sock.send_to(packet.as_bytes(), peer).await?;
-
-    // let mut packet: PacketData;
-
-    // tokio::select! {
-    //     _ = quit.recv() => {
-    //         println!("Received quit signal, exiting...");
-    //         return Ok(());
-    //     }
-    //     // _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
-    //     //     anyhow::bail!("Timeout");
-    //     // }
-    //     result = udp_sock.recv_from(&mut buf) => {
-    //         match result {
-    //             Ok((n, s)) => {
-    //                 println!("Received: {:?}", &buf[..n]);
-    //                 packet = PacketData::try_from(&mut buf[..n])?;
-    //             }
-    //             Err(e) => {
-    //                 return Err(e.into());
-    //             }
-    //         }
-    //     }
-    // }
-
-    // // Decrypt the packet
-    // let data = chacha20poly1305::ChaCha20Poly1305::aead_decrypt(
-    //     &receiving_key,
-    //     receiving_key_counter,
-    //     &packet.encrypted_encapsulated_packet(),
-    //     &[],
-    // )?;
-
-    // println!("Decrypted data: {:?}", data);
 
     Ok(())
 }

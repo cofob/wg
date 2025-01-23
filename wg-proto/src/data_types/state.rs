@@ -37,7 +37,7 @@ impl ReadyData {
 pub enum PeerState {
     Uninintialized,
     InitialHandshake(InitialHandshakeData),
-    // WantsCookieReply,
+    WantsCookieReply,
     // NeedCookieReply,
     Ready(ReadyData),
 }

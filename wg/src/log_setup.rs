@@ -18,7 +18,7 @@ pub fn configure_logging(log_level: &Option<String>) -> Result<()> {
     } else if let Ok(s) = env::var("RUST_LOG") {
         builder.parse_filters(&s);
     } else {
-        builder.filter_level(LevelFilter::Info);
+        builder.filter_level(LevelFilter::Debug);
     }
 
     builder.try_init()?;
