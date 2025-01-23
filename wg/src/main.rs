@@ -10,7 +10,7 @@ use tun::AsyncDevice;
 use wg_proto::operations::{decrypt_data_in_place, process_packet};
 use wg_proto::{
     crypto::x25519::{X25519OperableSecretKey, X25519PublicKey, X25519StaticSecret},
-    data_types::{HandshakeResponseMessage, PeerState},
+    data_types::{traits::Counter, HandshakeResponseMessage, PeerState},
     operations::{initiate_handshake, prepare_packet, process_handshake_response},
 };
 
@@ -155,12 +155,18 @@ async fn main_entry(mut quit: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
                         tokio::select! {
                             n = tun.recv(&mut tun_buf[16..]) => {
                                 let n = n.expect("TUN read error");
-                                let packet = {
+                                let counter;
+                                let receiver_index;
+                                let key;
+                                {
                                     let mut data = data.lock().unwrap();
-                                    prepare_packet::<
-                                        wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
-                                    >(&mut tun_buf, 16, n, &mut data).expect("Prepare packet error")
+                                    counter = data.sending_key_counter.next_counter();
+                                    receiver_index = data.receiver_index;
+                                    key = data.sending_key;
                                 };
+                                let packet = prepare_packet::<_,
+                                        wg_rust_crypto::chacha20poly1305::ChaCha20Poly1305,
+                                    >(&mut tun_buf, 16, n, counter, receiver_index, &key).expect("Prepare packet error");
                                 udp_sock.send_to(&packet.as_bytes(), peer).await.expect("Send error");
                                 // println!("Sent: {:?}", &packet);
                             }

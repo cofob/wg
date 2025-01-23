@@ -1,10 +1,8 @@
 use crate::crypto::blake2::Blake2s;
 use crate::crypto::chacha20poly1305::ChaCha20Poly1305;
 use crate::crypto::tai64::Tai64N;
-use crate::data_types::traits::Counter;
-use crate::data_types::{
-    HandshakeResponseMessage, InitialHandshakeData, PacketData, PeerState, ReadyData,
-};
+use crate::data_types::traits::ToLEArray;
+use crate::data_types::{HandshakeResponseMessage, InitialHandshakeData, PacketData, PeerState};
 use crate::errors::WgError;
 use crate::utils::concat_slices;
 use crate::{consts, data_types};
@@ -79,16 +77,7 @@ pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N
     // let encrypted_static =
     //     CHACHA::aead_encrypt(&key, 0, initiator_static_public.to_bytes(), &hash)?;
     msg.set_encrypted_static_unencrypted(initiator_static_public.to_bytes());
-    {
-        CHACHA::aead_encrypt_in_place(
-            &mut unsafe {
-                core::slice::from_raw_parts_mut(msg.encrypted_static_mut().as_mut_ptr(), 32 + 16)
-            },
-            &key,
-            0,
-            &hash,
-        )?;
-    }
+    CHACHA::aead_encrypt_in_place(msg.encrypted_static_mut(), &key, 0, &hash)?;
 
     // initiator.hash = HASH(initiator.hash || msg.encrypted_static)
     let hash = BLAKE2s::hash(&concat_slices::<{ 32 + 32 + 16 }>([
@@ -110,16 +99,7 @@ pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N
     // msg.encrypted_timestamp = AEAD(key, 0, TAI64N(), initiator.hash)
     // let encrypted_timestamp = CHACHA::aead_encrypt(&key, 0, &TAI64N::now().to_bytes(), &hash)?;
     msg.set_encrypted_timestamp_unencrypted(&TAI64N::now().to_bytes());
-    {
-        CHACHA::aead_encrypt_in_place(
-            &mut unsafe {
-                core::slice::from_raw_parts_mut(msg.encrypted_timestamp_mut().as_mut_ptr(), 12 + 16)
-            },
-            &key,
-            0,
-            &hash,
-        )?;
-    }
+    CHACHA::aead_encrypt_in_place(msg.encrypted_timestamp_mut(), &key, 0, &hash)?;
 
     // initiator.hash = HASH(initiator.hash || msg.encrypted_timestamp)
     let hash = BLAKE2s::hash(&concat_slices::<{ 32 + 12 + 16 }>([
@@ -217,16 +197,7 @@ pub fn process_handshake_response<
 
     // decrypt msg.encrypted_nothing
     // let nothing_plain = CHACHA::aead_decrypt(&key, 0, msg.encrypted_nothing(), &hash)?;
-    {
-        CHACHA::aead_decrypt_in_place(
-            &mut unsafe {
-                core::slice::from_raw_parts_mut(msg.encrypted_nothing_mut().as_mut_ptr(), 0 + 16)
-            },
-            &key,
-            0,
-            &hash,
-        )?;
-    }
+    CHACHA::aead_decrypt_in_place(msg.encrypted_nothing_mut(), &key, 0, &hash)?;
 
     // temp1 = HMAC(initiator.chaining_key, [empty])
     let temp1 = BLAKE2s::hmac(&chaining_key, &[]);
@@ -249,11 +220,13 @@ pub fn process_handshake_response<
     )))
 }
 
-pub fn prepare_packet<'a, CHACHA: ChaCha20Poly1305>(
+pub fn prepare_packet<'a, T, CHACHA: ChaCha20Poly1305>(
     buf: &'a mut [u8],
     start_offset: usize,
     len: usize,
-    state: &mut ReadyData,
+    counter: u64,
+    receiver_index: impl ToLEArray<T, 4>,
+    sending_key: &[u8; 32],
 ) -> Result<PacketData<'a>, WgError> {
     // Calculate padding so that len is a multiple of 16
     let padding = 16 - (len % 16);
@@ -274,26 +247,17 @@ pub fn prepare_packet<'a, CHACHA: ChaCha20Poly1305>(
         PacketData::from_bytes_unchecked(&mut buf[header_start..header_start + full_len]);
     packet.prepare_data();
 
-    let counter = state.sending_key_counter.next_counter();
-
     // Populate the necessary fields
-    packet.set_receiver_index(state.receiver_index);
+    packet.set_receiver_index(receiver_index);
     packet.set_counter(counter);
 
     // Encrypt the data
-    {
-        CHACHA::aead_encrypt_in_place(
-            &mut unsafe {
-                core::slice::from_raw_parts_mut(
-                    packet.encrypted_encapsulated_packet_mut().as_mut_ptr(),
-                    padded_len + 16,
-                )
-            },
-            &state.sending_key,
-            counter,
-            &[],
-        )?;
-    }
+    CHACHA::aead_encrypt_in_place(
+        packet.encrypted_encapsulated_packet_mut(),
+        &sending_key,
+        counter,
+        &[],
+    )?;
 
     Ok(packet)
 }
