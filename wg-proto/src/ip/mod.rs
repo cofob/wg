@@ -1,8 +1,10 @@
 mod ipv4;
 mod ipv6;
+mod protocols;
 
 pub use ipv4::IPv4Packet;
 pub use ipv6::IPv6Packet;
+pub use protocols::Protocol;
 
 pub enum IPPacket<'a> {
     V4(IPv4Packet<'a>),
@@ -25,7 +27,7 @@ impl<'a> IPPacket<'a> {
         }
     }
 
-    pub fn protocol(&self) -> u8 {
+    pub fn protocol(&self) -> Option<Protocol> {
         match self {
             IPPacket::V4(packet) => packet.protocol(),
             IPPacket::V6(packet) => packet.protocol(),

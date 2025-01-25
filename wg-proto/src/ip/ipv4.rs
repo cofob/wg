@@ -1,5 +1,7 @@
 use core::net::Ipv4Addr;
 
+use super::Protocol;
+
 pub struct IPv4Packet<'a> {
     data: &'a [u8],
 }
@@ -13,8 +15,8 @@ impl<'a> IPv4Packet<'a> {
         self.data[0] >> 4
     }
 
-    pub fn protocol(&self) -> u8 {
-        self.data[9]
+    pub fn protocol(&self) -> Option<Protocol> {
+        Protocol::try_from(self.data[9]).ok()
     }
 
     pub fn src(&self) -> Ipv4Addr {
@@ -58,7 +60,7 @@ mod tests {
         let packet = IPv4Packet::new(&TEST_PACKET);
 
         assert_eq!(packet.version(), 4);
-        assert_eq!(packet.protocol(), 1);
+        assert_eq!(packet.protocol(), Some(Protocol::ICMP));
         assert_eq!(packet.src(), Ipv4Addr::new(10, 0, 0, 3));
         assert_eq!(packet.dst(), Ipv4Addr::new(10, 0, 0, 1));
     }

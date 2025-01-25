@@ -1,5 +1,7 @@
 use core::net::Ipv6Addr;
 
+use super::Protocol;
+
 pub struct IPv6Packet<'a> {
     data: &'a [u8],
 }
@@ -13,8 +15,8 @@ impl<'a> IPv6Packet<'a> {
         self.data[0] >> 4
     }
 
-    pub fn protocol(&self) -> u8 {
-        self.data[6]
+    pub fn protocol(&self) -> Option<Protocol> {
+        Protocol::try_from(self.data[6]).ok()
     }
 
     pub fn src(&self) -> Ipv6Addr {
@@ -77,7 +79,7 @@ mod tests {
         let packet = IPv6Packet::new(&TEST_PACKET);
 
         assert_eq!(packet.version(), 6);
-        assert_eq!(packet.protocol(), 58);
+        assert_eq!(packet.protocol(), Some(Protocol::IPv6ICMP));
         assert_eq!(packet.src(), Ipv6Addr::new(2, 0, 0, 0, 0, 0, 0, 0));
         assert_eq!(packet.dst(), Ipv6Addr::new(2, 0, 0, 0, 0, 0, 0, 1));
     }

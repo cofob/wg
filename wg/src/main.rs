@@ -10,7 +10,10 @@ use std::os::fd::AsRawFd;
 use std::str::FromStr;
 use std::time::Duration;
 use tun::Device;
-use wg_proto::data_types::{buffer::AllocBuffer, chunk, Buffer};
+use wg_proto::{
+    data_types::{buffer::AllocBuffer, chunk, Buffer},
+    ip::IPPacket,
+};
 
 fn create_tun(addr: &IpAddr) -> Result<Device> {
     let mut tun_config = tun::Configuration::default();
@@ -51,7 +54,9 @@ fn worker_inner(tx: &Sender<MasterMessage>, message: WorkerMessage) -> Result<()
         WorkerMessage::TunRead { chunk, len } => {
             let chunk: chunk::Chunk<chunk::Read> = chunk.into();
             let buf = &chunk.as_ref()[..len];
-            debug!("worker read: {:?}", buf);
+            let packet = IPPacket::new(buf).unwrap();
+            println!("packet: {:?}", packet);
+            // debug!("worker read: {:?}", buf);
             tx.send(MasterMessage::ReturnBuffer {
                 chunk: chunk.into(),
             })?;
