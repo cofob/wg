@@ -99,7 +99,7 @@ pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N
 
     // msg.encrypted_timestamp = AEAD(key, 0, TAI64N(), initiator.hash)
     // let encrypted_timestamp = CHACHA::aead_encrypt(&key, 0, &TAI64N::now().to_bytes(), &hash)?;
-    msg.set_encrypted_timestamp_unencrypted(&TAI64N::now().to_bytes());
+    msg.set_encrypted_timestamp_unencrypted(TAI64N::now().to_bytes());
     CHACHA::aead_encrypt_in_place(msg.encrypted_timestamp_mut(), &key, 0, &hash)?;
 
     // initiator.hash = HASH(initiator.hash || msg.encrypted_timestamp)
@@ -114,9 +114,9 @@ pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N
             consts::LABEL_MAC1.as_bytes(),
             responder_static_public.to_bytes(),
         ])),
-        &msg.mac1_content(),
+        msg.mac1_content(),
     );
-    msg.set_mac1(&mac1);
+    msg.set_mac1(mac1);
 
     // mac2
     // if (initiator.last_received_cookie is empty or expired)
@@ -124,10 +124,10 @@ pub fn initiate_handshake<'a, BLAKE2s: Blake2s, CHACHA: ChaCha20Poly1305, TAI64N
     // else
     //     msg.mac2 = MAC(initiator.last_received_cookie, msg[0:offsetof(msg.mac2)])
     if let Some(cookie) = last_received_cookie {
-        let mac2 = BLAKE2s::mac(cookie, &msg.mac2_content());
-        msg.set_mac2(&mac2);
+        let mac2 = BLAKE2s::mac(cookie, msg.mac2_content());
+        msg.set_mac2(mac2);
     } else {
-        msg.set_mac2(&[0u8; 16]);
+        msg.set_mac2([0u8; 16]);
     }
 
     Ok((
@@ -219,11 +219,11 @@ pub fn process_handshake_response<
     // initiator.receiving_key = temp3
     let receiving_key = temp3;
 
-    Ok(PeerState::Ready(data_types::ReadyData::new(
+    Ok(PeerState::Ready(Box::new(data_types::ReadyData::new(
         sending_key,
         receiving_key,
         msg.sender_index(),
-    )))
+    ))))
 }
 
 pub fn prepare_packet<'a, T, CHACHA: ChaCha20Poly1305>(
@@ -260,7 +260,7 @@ pub fn prepare_packet<'a, T, CHACHA: ChaCha20Poly1305>(
     // Encrypt the data
     CHACHA::aead_encrypt_in_place(
         packet.encrypted_encapsulated_packet_mut(),
-        &sending_key,
+        sending_key,
         counter,
         &[],
     )?;
@@ -268,13 +268,13 @@ pub fn prepare_packet<'a, T, CHACHA: ChaCha20Poly1305>(
     Ok(packet)
 }
 
-pub fn process_packet<'a>(buf: &'a mut [u8]) -> Result<PacketData<'a>, WgError> {
+pub fn process_packet(buf: &mut [u8]) -> Result<PacketData<'_>, WgError> {
     let packet = PacketData::from_bytes(buf)?;
     Ok(packet)
 }
 
-pub fn decrypt_data_in_place<'a, CHACHA: ChaCha20Poly1305>(
-    data: &'a mut [u8],
+pub fn decrypt_data_in_place<CHACHA: ChaCha20Poly1305>(
+    data: &mut [u8],
     key: &[u8; 32],
     counter: u64,
 ) -> Result<(), WgError> {

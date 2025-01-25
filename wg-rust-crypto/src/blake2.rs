@@ -31,14 +31,14 @@ impl crypto::blake2::Blake2s for Blake2s {
 
         // 4) Inner hash: H(i_key_pad || message)
         let inner_hash = Blake2s256::new()
-            .chain_update(&i_key_pad)
+            .chain_update(i_key_pad)
             .chain_update(data)
             .finalize();
 
         // 5) Outer hash: H(o_key_pad || inner_hash)
         let result = Blake2s256::new()
-            .chain_update(&o_key_pad)
-            .chain_update(&inner_hash)
+            .chain_update(o_key_pad)
+            .chain_update(inner_hash)
             .finalize();
 
         // 6) Produce final 32-byte HMAC value

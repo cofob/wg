@@ -1,22 +1,16 @@
-#![feature(mpmc_channel)]
-
 mod log_setup;
 
 use anyhow::Result;
 use io_uring::{opcode, types, IoUring};
+use kanal::{bounded, Receiver, Sender};
 use log::debug;
 use slab::Slab;
 use std::net::IpAddr;
 use std::os::fd::AsRawFd;
 use std::str::FromStr;
-use std::sync::mpmc;
 use std::time::Duration;
 use tun::Device;
-
-#[derive(Clone, Debug)]
-enum Token {
-    TunRead { buf_ptr: *mut u8, buf_len: usize },
-}
+use wg_proto::data_types::{buffer::AllocBuffer, chunk, Buffer};
 
 fn create_tun(addr: &IpAddr) -> Result<Device> {
     let mut tun_config = tun::Configuration::default();
@@ -35,21 +29,32 @@ fn create_tun(addr: &IpAddr) -> Result<Device> {
     Ok(tun::create(&tun_config)?)
 }
 
+#[derive(Debug)]
+enum EventToken {
+    TunRead { chunk: chunk::Chunk<chunk::Read> },
+}
+
 enum WorkerMessage {
     Shutdown,
-    Read { buf_ptr: usize, buf_len: usize },
+    TunRead {
+        chunk: chunk::Chunk<chunk::Full>,
+        len: usize,
+    },
 }
 
 enum MasterMessage {
-    ReturnBuffer { buf_ptr: usize, buf_len: usize },
+    ReturnBuffer { chunk: chunk::Chunk<chunk::Full> },
 }
 
-fn worker_inner(tx: &mpmc::Sender<MasterMessage>, message: WorkerMessage) -> Result<()> {
+fn worker_inner(tx: &Sender<MasterMessage>, message: WorkerMessage) -> Result<()> {
     match message {
-        WorkerMessage::Read { buf_ptr, buf_len } => {
-            let buf = unsafe { std::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+        WorkerMessage::TunRead { chunk, len } => {
+            let chunk: chunk::Chunk<chunk::Read> = chunk.into();
+            let buf = &chunk.as_ref()[..len];
             debug!("worker read: {:?}", buf);
-            tx.send(MasterMessage::ReturnBuffer { buf_ptr, buf_len })?;
+            tx.send(MasterMessage::ReturnBuffer {
+                chunk: chunk.into(),
+            })?;
         }
         WorkerMessage::Shutdown => {
             return Err(anyhow::anyhow!("worker shutdown"));
@@ -59,7 +64,7 @@ fn worker_inner(tx: &mpmc::Sender<MasterMessage>, message: WorkerMessage) -> Res
     Ok(())
 }
 
-fn worker(rx: mpmc::Receiver<WorkerMessage>, tx: mpmc::Sender<MasterMessage>) {
+fn worker(rx: Receiver<WorkerMessage>, tx: Sender<MasterMessage>) {
     loop {
         match rx.recv() {
             Ok(message) => {
@@ -74,72 +79,6 @@ fn worker(rx: mpmc::Receiver<WorkerMessage>, tx: mpmc::Sender<MasterMessage>) {
                 break;
             }
         }
-    }
-}
-
-/// Struct to hold the buffer data and get buffer chunks from it.
-struct Buffer {
-    data: Vec<u8>,
-    chunk_size: usize,
-    available_ptrs: Vec<usize>,
-}
-
-impl Buffer {
-    fn new(data: Vec<u8>, chunk_size: usize) -> Self {
-        let available_ptrs = Self::get_available_ptrs(&data, chunk_size);
-        Self {
-            data,
-            chunk_size,
-            available_ptrs,
-        }
-    }
-
-    fn get_available_ptrs(data: &Vec<u8>, chunk_size: usize) -> Vec<usize> {
-        let start_ptr = data.as_ptr() as usize;
-        (0..data.len())
-            .step_by(chunk_size)
-            .map(|i| start_ptr + i)
-            .collect()
-    }
-
-    fn get_chunk(&mut self) -> Option<&mut [u8]> {
-        if let Some(ptr) = self.available_ptrs.pop() {
-            Some(unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, self.chunk_size) })
-        } else {
-            None
-        }
-    }
-
-    /// Read chunk should have additional 16 bytes in outer sides of the buffer
-    /// to store the metadata and poly1305 tag.
-    ///
-    /// [ metadata | chunk | metadata ]
-    fn get_read_chunk(&mut self) -> Option<&mut [u8]> {
-        if let Some(ptr) = self.available_ptrs.pop() {
-            Some(unsafe {
-                std::slice::from_raw_parts_mut((ptr as *mut u8).offset(16), self.chunk_size - 32)
-            })
-        } else {
-            None
-        }
-    }
-
-    /// Convert read chunk to write chunk by adding 16 bytes in outer sides of the buffer.
-    fn convert_read_chunk_to_write_chunk(&self, chunk: &mut [u8]) -> &mut [u8] {
-        unsafe {
-            std::slice::from_raw_parts_mut(
-                (chunk.as_ptr() as usize as *mut u8).offset(-16),
-                self.chunk_size + 32,
-            )
-        }
-    }
-
-    fn return_chunk(&mut self, chunk: &mut [u8]) {
-        self.available_ptrs.push(chunk.as_ptr() as usize);
-    }
-
-    fn get_available_chunks(&self) -> usize {
-        self.available_ptrs.len()
     }
 }
 
@@ -161,8 +100,8 @@ fn main() -> Result<()> {
 
     let mut token_alloc = Slab::with_capacity(64);
 
-    let (wtx, wrx) = mpmc::channel();
-    let (mtx, mrx) = mpmc::channel();
+    let (wtx, wrx) = bounded(64);
+    let (mtx, mrx) = bounded(64);
 
     for _ in 0..cpus {
         let wrx = wrx.clone();
@@ -172,16 +111,15 @@ fn main() -> Result<()> {
 
     // Create one vector enough to hold all the buffers for TUN reads/writes
     let mtu = 8932;
-    let mut tun_buffer = Buffer::new(vec![0; mtu * cpus * 2], mtu);
+    let mut tun_buffer = AllocBuffer::new(vec![0; mtu * cpus * 2], mtu);
 
     // Create read from TUN requests for all the cpus
     for _ in 0..cpus {
-        let buf = tun_buffer.get_read_chunk().unwrap();
-        let read_token = token_alloc.insert(Token::TunRead {
-            buf_ptr: buf.as_mut_ptr(),
-            buf_len: buf.len(),
-        });
-        let read_e = opcode::Read::new(types::Fd(raw_fd), buf.as_mut_ptr(), buf.len() as _)
+        let chunk: chunk::Chunk<chunk::Read> = tun_buffer.get_chunk().unwrap().into();
+        let mut_ptr = chunk.as_mut_ptr();
+        let len = chunk.len();
+        let read_token = token_alloc.insert(EventToken::TunRead { chunk });
+        let read_e = opcode::Read::new(types::Fd(raw_fd), mut_ptr, len as _)
             .build()
             .user_data(read_token as _);
         unsafe {
@@ -195,35 +133,23 @@ fn main() -> Result<()> {
         submitter.submit()?;
         cq.sync();
 
-        // Wait for channel messages if there are no IO events
-        let mut messages = vec![];
-        if cq.len() == 0 {
-            match mrx.recv_timeout(Duration::from_millis(10)) {
-                Ok(message) => {
-                    messages.push(message);
-                },
-                Err(_) => {
-                    // If there are no messages, continue the loop
-                    continue;
-                }
-            }
+        // Wait a bit if there are no messages to process
+        if cq.len() == 0 && mrx.is_empty() {
+            std::thread::sleep(Duration::from_millis(10));
         }
 
         // Process the messages for the master thread
-        for message in messages.into_iter().chain(mrx.try_iter()) {
+        while let Some(message) = mrx.try_recv()? {
             match message {
-                MasterMessage::ReturnBuffer { buf_ptr, buf_len } => {
+                MasterMessage::ReturnBuffer { chunk } => {
                     // Create read request
-                    let buf =
-                        unsafe { std::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
-                    let read_token = token_alloc.insert(Token::TunRead {
-                        buf_ptr: buf_ptr as *mut u8,
-                        buf_len,
-                    });
-                    let read_e =
-                        opcode::Read::new(types::Fd(raw_fd), buf.as_mut_ptr(), buf.len() as _)
-                            .build()
-                            .user_data(read_token as _);
+                    let chunk: chunk::Chunk<chunk::Read> = chunk.into();
+                    let mut_ptr = chunk.as_mut_ptr();
+                    let len = chunk.len();
+                    let read_token = token_alloc.insert(EventToken::TunRead { chunk });
+                    let read_e = opcode::Read::new(types::Fd(raw_fd), mut_ptr, len as _)
+                        .build()
+                        .user_data(read_token as _);
                     unsafe {
                         sq.push(&read_e)?;
                     }
@@ -244,24 +170,20 @@ fn main() -> Result<()> {
                 continue;
             }
 
-            let token = &mut token_alloc[token_index];
-            match token.clone() {
-                Token::TunRead { buf_ptr, buf_len } => {
+            let token = token_alloc.remove(token_index);
+            match token {
+                EventToken::TunRead { chunk } => {
                     let len = ret as usize;
-                    let buf = unsafe { std::slice::from_raw_parts_mut(buf_ptr, buf_len) };
 
                     // Send the buffer to processing threads channel
-                    wtx.send(WorkerMessage::Read {
-                        buf_ptr: buf_ptr as usize,
-                        buf_len: len,
+                    wtx.send(WorkerMessage::TunRead {
+                        chunk: chunk.into(),
+                        len,
                     })?;
-
-                    // Remove the read token from the slab
-                    token_alloc.remove(token_index);
                 }
             }
         }
     }
 
-    Ok(())
+    // Ok(())
 }

@@ -14,8 +14,8 @@ pub enum ChaCha20Poly1305Error {
 pub struct ChaCha20Poly1305;
 
 impl crypto::chacha20poly1305::ChaCha20Poly1305 for ChaCha20Poly1305 {
-    fn aead_encrypt_in_place<'a>(
-        buf: &'a mut [u8],
+    fn aead_encrypt_in_place(
+        buf: &mut [u8],
         key: &[u8; 32],
         counter: u64,
         associated_data: &[u8],
@@ -38,8 +38,8 @@ impl crypto::chacha20poly1305::ChaCha20Poly1305 for ChaCha20Poly1305 {
         Ok(())
     }
 
-    fn aead_decrypt_in_place<'a>(
-        buf: &'a mut [u8],
+    fn aead_decrypt_in_place(
+        buf: &mut [u8],
         key: &[u8; 32],
         counter: u64,
         associated_data: &[u8],

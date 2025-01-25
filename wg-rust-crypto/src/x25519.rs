@@ -29,7 +29,7 @@ pub struct X25519EphemeralSecret(x25519_dalek::ReusableSecret);
 impl crypto::x25519::X25519OperableSecretKey for X25519EphemeralSecret {
     fn generate() -> Self {
         X25519EphemeralSecret(x25519_dalek::ReusableSecret::random_from_rng(
-            &mut rand::thread_rng(),
+            rand::thread_rng(),
         ))
     }
 
@@ -59,7 +59,7 @@ pub struct X25519StaticSecret(x25519_dalek::StaticSecret);
 impl crypto::x25519::X25519OperableSecretKey for X25519StaticSecret {
     fn generate() -> Self {
         X25519StaticSecret(x25519_dalek::StaticSecret::random_from_rng(
-            &mut rand::thread_rng(),
+            rand::thread_rng(),
         ))
     }
 

@@ -19,3 +19,6 @@ num_cpus = "1.16.0"
 threadpool = "1.8.1"
 slab = "0.4.9"
 libc = "0.2.169"
+kanal = { version = "0.1.0-pre8", default-features = false }
+
+wg-proto = { path = "../wg-proto" }

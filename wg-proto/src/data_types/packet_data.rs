@@ -159,13 +159,13 @@ impl<'a> From<&'a mut [u8]> for PacketData<'a> {
 
 impl AsRef<[u8]> for PacketData<'_> {
     fn as_ref(&self) -> &[u8] {
-        &self.data
+        self.data
     }
 }
 
 impl AsMut<[u8]> for PacketData<'_> {
     fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.data
+        self.data
     }
 }
 

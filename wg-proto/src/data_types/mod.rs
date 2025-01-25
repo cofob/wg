@@ -1,3 +1,5 @@
+pub mod buffer;
+pub mod chunk;
 mod handshake_initiation;
 mod handshake_response;
 mod message_types;
@@ -10,3 +12,4 @@ pub use handshake_response::HandshakeResponseMessage;
 pub use message_types::{GetMessageType, MessageType};
 pub use packet_data::PacketData;
 pub use state::{CounterWindow, InitialHandshakeData, Peer, PeerState, ReadyData};
+pub use traits::{Buffer, Counter, FromLEArray, ToLEArray};

@@ -24,11 +24,11 @@ pub struct ReadyData {
 impl ReadyData {
     pub fn new(sending_key: [u8; 32], receiving_key: [u8; 32], receiver_index: [u8; 4]) -> Self {
         Self {
-            sending_key: sending_key,
-            receiving_key: receiving_key,
+            sending_key,
+            receiving_key,
             sending_key_counter: SenderCounter::new(),
             receiving_key_counter: CounterWindow::new(),
-            receiver_index: receiver_index,
+            receiver_index,
         }
     }
 }
@@ -39,7 +39,7 @@ pub enum PeerState {
     InitialHandshake(InitialHandshakeData),
     WantsCookieReply,
     // NeedCookieReply,
-    Ready(ReadyData),
+    Ready(Box<ReadyData>),
 }
 
 /// Receiver counter window.
@@ -69,6 +69,12 @@ pub struct CounterWindow {
     max_counter: u64,
 }
 
+impl Default for CounterWindow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CounterWindow {
     pub fn new() -> Self {
         // Fix for 0 counter value.
@@ -76,7 +82,7 @@ impl CounterWindow {
         window[0] = 1;
 
         Self {
-            window: window,
+            window,
             max_counter: 0,
         }
     }
@@ -86,8 +92,8 @@ impl CounterWindow {
         window[0] = 1;
 
         Self {
-            window: window,
-            max_counter: max_counter,
+            window,
+            max_counter,
         }
     }
 
@@ -149,6 +155,12 @@ impl core::fmt::Debug for CounterWindow {
 #[derive(Debug)]
 pub struct SenderCounter(u64);
 
+impl Default for SenderCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SenderCounter {
     pub fn new() -> Self {
         Self(0)
@@ -184,12 +196,12 @@ mod tests {
             assert_eq!(window.put(i as u64), Some(()));
         }
         for i in 1000..3000 {
-            assert_eq!(window.contains(i as u64), true);
+            assert!(window.contains(i as u64));
         }
         for i in 0..1000 {
-            assert_eq!(window.contains(i as u64), false);
+            assert!(!window.contains(i as u64));
         }
         assert_eq!(window.put(3001), Some(()));
-        assert_eq!(window.contains(1000), false);
+        assert!(!window.contains(1000));
     }
 }
