@@ -14,7 +14,26 @@ in pkgs'.mkShell {
     else
       rust-bin.${channel}.latest.${profile}).override {
         extensions = [ "rust-src" ];
-        targets = [ "x86_64-unknown-linux-musl" ];
+        targets = [
+          # Linux (x86)
+          "x86_64-unknown-linux-musl"
+          "x86_64-unknown-linux-gnu"
+          # Linux (ARM)
+          "aarch64-unknown-linux-musl"
+          "aarch64-unknown-linux-gnu"
+          # Windows (x86)
+          "x86_64-pc-windows-gnu"
+          "x86_64-pc-windows-msvc"
+          # Windows (ARM)
+          "aarch64-pc-windows-msvc"
+          "aarch64-pc-windows-gnullvm"
+          # macOS (x86)
+          "x86_64-apple-darwin"
+          # macOS (ARM)
+          "aarch64-apple-darwin"
+        ];
       })
+    # Easy cross-compilation to Windows
+    cargo-xwin
   ];
 }
