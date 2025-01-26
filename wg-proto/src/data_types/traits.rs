@@ -1,5 +1,3 @@
-use super::chunk;
-
 pub trait ToLEArray<T, const N: usize> {
     fn to_le_array(&self) -> [u8; N];
 }
@@ -75,8 +73,18 @@ pub trait Counter {
 }
 
 /// Trait to get buffer chunks.
-pub trait Buffer {
-    fn get_chunk(&mut self) -> Option<chunk::Chunk<chunk::Full>>;
-    fn return_chunk(&mut self, chunk: &mut chunk::Chunk<chunk::Full>);
+pub trait Buffer: AsRef<[u8]> + AsMut<[u8]> {
+    type FullChunk: Chunk;
+
+    fn get_chunk(&mut self) -> Option<Self::FullChunk>;
+    fn return_chunk(&mut self, chunk: &mut Self::FullChunk);
     fn get_available_chunks(&self) -> usize;
+    fn get_chunk_size(&self) -> usize;
+    fn as_mut_ptr(&mut self) -> *mut u8;
+}
+
+pub trait Chunk: AsRef<[u8]> + AsMut<[u8]> {
+    fn len(&self) -> usize;
+    fn as_ptr(&self) -> *const u8;
+    fn as_mut_ptr(&mut self) -> *mut u8;
 }

@@ -511,7 +511,7 @@ impl TryFrom<u8> for Protocol {
     }
 }
 
-impl std::str::FromStr for Protocol {
+impl core::str::FromStr for Protocol {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -673,5 +673,22 @@ impl std::str::FromStr for Protocol {
             "RESERVED" => Ok(Protocol::Reserved),
             _ => Err(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_protocol_conversion() {
+        let udp_num: u8 = Protocol::UDP.into();
+        assert_eq!(udp_num, 17);
+
+        let tcp_protocol = Protocol::try_from(6).unwrap();
+        assert_eq!(tcp_protocol, Protocol::TCP);
+
+        let icmp_protocol: Protocol = "icmp".parse().unwrap();
+        assert_eq!(icmp_protocol, Protocol::ICMP);
     }
 }

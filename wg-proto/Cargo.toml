@@ -5,7 +5,7 @@ edition = "2021"
 description = "Abstract WireGuard protocol"
 
 [features]
-default = ["std"]
+default = ["std", "config"]
 config = ["std", "dep:serde", "dep:cidr"]
 std = []
 
@@ -19,4 +19,4 @@ serde = { version = "1", features = [
 cidr = { version = "0.3.1", default-features = false, features = [
     "serde",
 ], optional = true }
-base64 = { version = "0.22.1", default-features = false }
+base64 = { version = "0.22.1", features = ["alloc"], default-features = false }

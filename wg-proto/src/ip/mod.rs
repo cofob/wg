@@ -34,17 +34,17 @@ impl<'a> IPPacket<'a> {
         }
     }
 
-    pub fn src(&self) -> std::net::IpAddr {
+    pub fn src(&self) -> core::net::IpAddr {
         match self {
-            IPPacket::V4(packet) => std::net::IpAddr::V4(packet.src()),
-            IPPacket::V6(packet) => std::net::IpAddr::V6(packet.src()),
+            IPPacket::V4(packet) => core::net::IpAddr::V4(packet.src()),
+            IPPacket::V6(packet) => core::net::IpAddr::V6(packet.src()),
         }
     }
 
-    pub fn dst(&self) -> std::net::IpAddr {
+    pub fn dst(&self) -> core::net::IpAddr {
         match self {
-            IPPacket::V4(packet) => std::net::IpAddr::V4(packet.dst()),
-            IPPacket::V6(packet) => std::net::IpAddr::V6(packet.dst()),
+            IPPacket::V4(packet) => core::net::IpAddr::V4(packet.dst()),
+            IPPacket::V6(packet) => core::net::IpAddr::V6(packet.dst()),
         }
     }
 }
