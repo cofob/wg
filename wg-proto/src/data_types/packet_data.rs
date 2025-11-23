@@ -34,7 +34,6 @@ impl<'a> PacketData<'a> {
         self.data[0] = MessageType::PacketData.to_u8();
         // Fill 3 bytes with 0
         self.data[1..4].copy_from_slice(&[0, 0, 0]);
-        // Fill 8 bytes with 0
     }
 
     /// Create a new PacketData from a byte slice.
